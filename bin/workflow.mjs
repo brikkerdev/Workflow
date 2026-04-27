@@ -55,8 +55,48 @@ function ensureWorkflowDir(project) {
   }
 }
 
+function findClaude() {
+  const exts = process.platform === 'win32'
+    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
+    : [''];
+  const names = ['claude'];
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const d of dirs) {
+    for (const n of names) {
+      for (const e of exts) {
+        const p = path.join(d, n + e);
+        try { if (fs.statSync(p).isFile()) return p; } catch {}
+      }
+    }
+  }
+  return null;
+}
+
+function launchClaude(project) {
+  if (!fs.existsSync(path.join(project, '.claude'))) {
+    console.log('[workflow] no .claude/ in project — skipping Claude Code launch');
+    return;
+  }
+  const claudePath = findClaude();
+  if (!claudePath) {
+    console.log('[workflow] claude not found on PATH — skipping Claude Code launch');
+    return;
+  }
+  console.log(`[workflow] launching claude in new window: ${claudePath}`);
+  if (process.platform === 'win32') {
+    spawn('cmd.exe', ['/c', 'start', '""', '/D', project, claudePath], {
+      cwd: project, detached: true, stdio: 'ignore', windowsHide: false,
+    }).unref();
+  } else {
+    spawn(claudePath, [], {
+      cwd: project, detached: true, stdio: 'ignore',
+    }).unref();
+  }
+}
+
 function cmdUp(project, rest) {
   ensureWorkflowDir(project);
+  launchClaude(project);
   const env = { ...process.env, WORKFLOW_PROJECT: project };
   const args = [path.join(KANBAN, 'server.mjs'), ...rest];
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });

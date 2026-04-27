@@ -290,6 +290,13 @@ button { font-family: inherit; }
   border-color: var(--agent);
 }
 .card .actions .start:disabled { color: var(--text-faint); border-color: var(--line); cursor: not-allowed; }
+.card .actions .stop {
+  color: var(--dot-blocked, #d77); border-color: color-mix(in srgb, var(--dot-blocked, #d77) 35%, transparent);
+}
+.card .actions .stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dot-blocked, #d77) 14%, transparent);
+  border-color: var(--dot-blocked, #d77);
+}
 
 /* status dot — driven by data-s attribute */
 .dot {

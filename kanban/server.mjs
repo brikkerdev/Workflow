@@ -9,7 +9,7 @@ import { ROOT, WORKFLOW } from './lib/config.mjs';
 import { exists } from './lib/repo.mjs';
 import { sendJson, serveStatic } from './lib/http.mjs';
 import {
-  handleBoard, handleTracks, handleTask, handlePatch, handleDispatch, handleQueueStatus,
+  handleBoard, handleTracks, handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject,
 } from './lib/handlers.mjs';
@@ -50,6 +50,10 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'PATCH') {
       if (p.startsWith('/api/task/')) return handlePatch(req, res, decodeURIComponent(p.split('/').pop()));
     } else if (req.method === 'DELETE') {
+      if (p.startsWith('/api/task/') && p.endsWith('/dispatch')) {
+        const parts = p.split('/');
+        return handleCancelDispatch(res, decodeURIComponent(parts[parts.length - 2]));
+      }
       const att = matchAttachment(p);
       if (att && att.name) return handleDeleteAttachment(res, att.tid, att.name);
     }

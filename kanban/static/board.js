@@ -21,7 +21,10 @@ function renderCard(t) {
     ? `<span class="it">${Icons.clock(10, 1.3)}${escapeHtml(t.estimate)}</span>`
     : '';
 
-  const showStart = t.status === 'todo' && !isUser;
+  const queuedIds = new Set(((STATE.queue && STATE.queue.items) || []).map(q => q.task_id));
+  const isQueued = queuedIds.has(t.id);
+  const showStart = t.status === 'todo' && !isUser && !isQueued;
+  const showStop = !isUser && (isQueued || t.status === 'in-progress');
 
   card.innerHTML = `
     <div class="head">
@@ -35,6 +38,7 @@ function renderCard(t) {
     </div>
     <div class="actions">
       ${showStart ? `<button class="start" ${canDispatch ? '' : 'disabled'} data-act="start">▶ Start</button>` : ''}
+      ${showStop ? `<button class="stop" data-act="stop" title="${isQueued ? 'cancel queued dispatch' : 'revert to todo (background agent will not auto-stop)'}">■ Stop</button>` : ''}
       <button class="open" data-act="open">Open</button>
     </div>
   `;
@@ -51,6 +55,7 @@ function renderCard(t) {
       e.stopPropagation();
       if (btn.dataset.act === 'open') openModal(t.id);
       else if (btn.dataset.act === 'start' && !btn.disabled) dispatchTask(t.id);
+      else if (btn.dataset.act === 'stop') stopTask(t.id);
       return;
     }
     openModal(t.id);
@@ -118,6 +123,19 @@ async function dispatchTask(id) {
   }
 }
 
+async function stopTask(id) {
+  try {
+    const r = await api(`/api/task/${id}/dispatch`, { method: 'DELETE' });
+    const bits = [];
+    if (r.trigger_removed) bits.push('trigger removed');
+    if (r.reverted_to_todo) bits.push('reverted to todo');
+    toast(`${id} stopped · ${bits.join(', ')} (queue: ${r.queue_size})`);
+    await refresh();
+  } catch (e) {
+    toast(`${id}: ${e.message}`, 'error');
+  }
+}
+
 function renderBoard() {
   const view = document.getElementById('view-iteration');
   view.innerHTML = '';
@@ -134,4 +152,5 @@ window.renderCard = renderCard;
 window.buildKanbanInto = buildKanbanInto;
 window.moveTask = moveTask;
 window.dispatchTask = dispatchTask;
+window.stopTask = stopTask;
 window.renderBoard = renderBoard;

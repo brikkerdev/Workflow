@@ -6,7 +6,7 @@ import {
   activeIter, iterDir, listTasks, listTrackSlugs, listTrackTasks,
   listAgents, findTask, saveTask, depsSatisfied,
 } from './repo.mjs';
-import { queueCount, queueItems, writeTrigger } from './queue.mjs';
+import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
 import { sendJson, readBody } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 
@@ -131,6 +131,22 @@ export async function handlePatch(req, res, tid) {
   saveTask(p, fm, body);
   fm._path = rel(p);
   sendJson(res, 200, fm);
+}
+
+export function handleCancelDispatch(res, tid) {
+  const [p, fm, body] = findTask(tid);
+  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  const removed = deleteTrigger(tid);
+  let reverted = false;
+  if (fm.status === 'in-progress') {
+    fm.status = 'todo';
+    saveTask(p, fm, body);
+    reverted = true;
+  }
+  if (!removed && !reverted) {
+    return sendJson(res, 409, { error: 'nothing to stop: not queued and not in-progress' });
+  }
+  sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, queue_size: queueCount() });
 }
 
 export function handleDispatch(res, tid) {

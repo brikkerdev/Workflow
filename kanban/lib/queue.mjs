@@ -18,6 +18,14 @@ export function queueItems() {
   return out;
 }
 
+export function deleteTrigger(tid) {
+  if (!exists(QUEUE_DIR)) return false;
+  const p = path.join(QUEUE_DIR, `${tid}.json`);
+  if (!fs.existsSync(p)) return false;
+  fs.unlinkSync(p);
+  return true;
+}
+
 export function writeTrigger(tid, fm, taskPath) {
   fs.mkdirSync(QUEUE_DIR, { recursive: true });
   const trigger = path.join(QUEUE_DIR, `${tid}.json`);
