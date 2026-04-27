@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Workflow — Kanban</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="brand">Workflow</span>
+    <span class="brand-divider"></span>
+    <button class="iter-button" id="iter-button">
+      <span id="iter-name">loading…</span>
+      <span class="chev" id="icon-chev"></span>
+    </button>
+  </div>
+  <div class="topbar-right">
+    <div class="search-stub">
+      <span id="icon-search"></span>
+      <span>Search</span>
+      <span class="kbd">⌘K</span>
+    </div>
+    <button class="reload-btn" id="theme-toggle" title="toggle theme">
+      <span id="icon-theme"></span>
+    </button>
+    <button class="reload-btn" id="reload" title="reload">
+      <span id="icon-reload"></span>
+    </button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="iteration">Iterations</button>
+  <button class="tab" data-tab="tracks">Tracks<span class="badge" id="tracks-badge"></span></button>
+  <button class="tab" data-tab="agents">Agents<span class="badge" id="agents-badge"></span></button>
+</nav>
+
+<main class="view active" id="view-iteration"></main>
+<main class="view" id="view-tracks"></main>
+<main class="view" id="view-agents"></main>
+
+<div class="queue-indicator hidden" id="queue-indicator">
+  <span class="queue-blob-wrap">
+    <span class="queue-blob"></span>
+    <span class="queue-ring"></span>
+  </span>
+  <span class="queue-text" id="queue-text">queue empty</span>
+  <span class="queue-sub" id="queue-sub"></span>
+</div>
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal" id="modal" role="dialog" aria-modal="true">
+    <header>
+      <span class="id" id="m-id"></span>
+      <span class="title" id="m-title"></span>
+      <button class="close" id="m-close" aria-label="close">×</button>
+    </header>
+    <div class="body">
+      <div class="row"><label>Status</label><select id="m-status"></select></div>
+      <div class="row"><label>Assignee</label><select id="m-assignee"></select></div>
+      <div class="row"><label>Estimate</label>
+        <select id="m-estimate"><option>S</option><option>M</option><option>L</option></select>
+      </div>
+      <div class="row row-top"><label>Deps</label>
+        <div class="deps-picker">
+          <div class="chips" id="m-deps-chips"></div>
+          <select id="m-deps-add" class="deps-add"><option value="">+ add dep…</option></select>
+        </div>
+      </div>
+      <section><h3>Attachments</h3>
+        <div class="att-grid" id="m-attachments"></div>
+      </section>
+      <section><h3>Goal</h3><div class="content" id="m-goal"></div></section>
+      <section><h3>Context</h3><div class="content" id="m-context"></div></section>
+      <section><h3>Acceptance criteria</h3><div class="content" id="m-acceptance"></div></section>
+      <section><h3>How to verify</h3><div class="content" id="m-verify"></div></section>
+      <section><h3>Notes</h3><div class="content" id="m-notes"></div></section>
+    </div>
+    <footer>
+      <button id="m-dispatch" class="primary">▶ Start</button>
+      <button id="m-save">Save</button>
+      <button id="m-cancel">Close</button>
+    </footer>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/icons.js"></script>
+<script src="/static/agentColors.js"></script>
+<script src="/static/util.js"></script>
+<script src="/static/api.js"></script>
+<script src="/static/state.js"></script>
+<script src="/static/board.js"></script>
+<script src="/static/tracks.js"></script>
+<script src="/static/agents.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

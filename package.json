@@ -1,0 +1,21 @@
+{
+  "name": "workflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-project kanban + Claude agent dispatch over .workflow/ task files. No npm deps.",
+  "type": "module",
+  "bin": {
+    "workflow": "bin/workflow.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "kanban": "node kanban/server.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brikkerdev/Workflow"
+  },
+  "license": "MIT"
+}
