@@ -19,6 +19,8 @@ const ICON_PATHS = {
   sparkle:   '<path d="M12 4l1.5 4.5L18 10l-4.5 1.5L12 16l-1.5-4.5L6 10l4.5-1.5z"/>',
   queue:     '<path d="M4 6h16M4 12h16M4 18h10"/>',
   layers:    '<path d="M12 4l9 5-9 5-9-5 9-5z"/><path d="M3 14l9 5 9-5"/>',
+  rows:      '<rect x="4" y="6" width="16" height="3" rx="1"/><rect x="4" y="11" width="16" height="3" rx="1"/><rect x="4" y="16" width="16" height="3" rx="1"/>',
+  rowsTight: '<rect x="4" y="6" width="16" height="2" rx="0.5"/><rect x="4" y="10" width="16" height="2" rx="0.5"/><rect x="4" y="14" width="16" height="2" rx="0.5"/><rect x="4" y="18" width="16" height="2" rx="0.5"/>',
 };
 
 // Map agent role / name → icon key.

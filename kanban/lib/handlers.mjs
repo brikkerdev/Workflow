@@ -178,7 +178,17 @@ export async function handleIterCreate(req, res, trackSlug) {
   const body = String(p.body || '').trim()
     ? '\n' + p.body
     : `\n# Iteration ${id} — ${fm.title}\n\n## Цель\n(одно-два предложения)\n\n## Scope\nЧто входит:\n- ...\nЧто НЕ входит:\n- ...\n\n## Exit criteria\n- [ ] Все таски done\n- [ ] ...\n\n## Заметки\n`;
+  // If created as 'active', demote any existing active iter and set ACTIVE pointer.
+  if (status === 'active') {
+    for (const other of listIterations(trackSlug)) {
+      if (other.status === 'active') {
+        const fm2 = { ...other.fm, status: 'done' };
+        writeIterationReadme(trackSlug, other.id, other.slug, fm2, other.body);
+      }
+    }
+  }
   writeIterationReadme(trackSlug, id, iterSlug, fm, body);
+  if (status === 'active') setTrackActive(trackSlug, id);
   sendJson(res, 200, { ok: true, id, slug: iterSlug });
 }
 
@@ -459,6 +469,24 @@ export async function handlePatch(req, res, tid) {
   saveTask(p, fm, nextBody);
   fm._path = rel(p);
   sendJson(res, 200, fm);
+}
+
+// DELETE /api/task/:id — remove the task file. Refuses if there are dependents.
+export function handleTaskDelete(res, tid) {
+  const [p, fm] = findTask(tid);
+  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  // dependents
+  const blockers = [];
+  for (const t of listAllTasks()) {
+    if (Array.isArray(t.deps) && t.deps.includes(tid)) blockers.push(t.id);
+  }
+  if (blockers.length) {
+    return sendJson(res, 409, { error: `${tid} is a dep of: ${blockers.join(', ')}` });
+  }
+  // remove queue trigger if any
+  deleteTrigger(tid);
+  fs.rmSync(p, { force: true });
+  sendJson(res, 200, { ok: true, deleted: tid });
 }
 
 export function handleCancelDispatch(res, tid) {

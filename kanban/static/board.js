@@ -7,7 +7,8 @@ function depsAllReady(t) {
 
 function renderCard(t, opts = {}) {
   const card = document.createElement('div');
-  card.className = 'card' + (t.running ? ' is-running' : '');
+  const running = t.status === 'in-progress' || t.status === 'queued';
+  card.className = 'card' + (running ? ' is-running' : '');
   card.draggable = true;
   card.dataset.id = t.id;
   card.dataset.agent = t.assignee || 'user';
@@ -168,9 +169,19 @@ function showDragReason(text, x, y) {
 async function moveTask(id, newStatus) {
   const t = STATE.taskIndex[id];
   if (!t || t.status === newStatus) return;
+  const prevStatus = t.status;
   try {
     await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
-    toast(`${id} → ${newStatus}`, 'success');
+    toast(`${id} → ${newStatus}`, 'success', {
+      undo: true,
+      onUndo: async () => {
+        try {
+          await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: prevStatus }) });
+          toast(`${id} reverted → ${prevStatus}`, 'success');
+          await refresh();
+        } catch (e) { toast(`undo failed: ${e.message}`, 'error'); }
+      },
+    });
     await refresh();
   } catch (e) {
     toast(`${id}: ${e.message}`, 'error');

@@ -12,7 +12,7 @@ import {
   handleBoard, handleTracks, handleTrack,
   handleTrackCreate, handleTrackUpdate, handleTrackDelete,
   handleIterCreate, handleIterUpdate, handleIterActivate, handleIterArchive, handleIterDelete, handleIterReorder,
-  handleTaskCreate,
+  handleTaskCreate, handleTaskDelete,
   handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
@@ -97,6 +97,8 @@ const server = http.createServer(async (req, res) => {
       }
       const att = matchAttachment(p);
       if (att && att.name) return handleDeleteAttachment(res, att.tid, att.name);
+      m = /^\/api\/task\/([^/]+)$/.exec(p);
+      if (m) return handleTaskDelete(res, decodeURIComponent(m[1]));
     }
     return sendJson(res, 404, { error: 'not found' });
   } catch (e) {

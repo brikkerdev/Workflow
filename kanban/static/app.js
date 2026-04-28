@@ -56,7 +56,23 @@ function updateHeader() {
   if (document.getElementById('queue-sheet')?.classList.contains('open')) renderQueueSheet();
 }
 
+function renderSkeleton() {
+  const view = document.getElementById('view-iteration');
+  if (!view || view.children.length) return;
+  let cols = '';
+  for (let c = 0; c < 5; c++) {
+    let cards = '';
+    for (let i = 0; i < 3; i++) {
+      cards += `<div class="card-skel"><div class="skel-line" style="width:40%"></div><div class="skel-line" style="width:90%"></div><div class="skel-line" style="width:60%"></div></div>`;
+    }
+    cols += `<div class="column"><div class="column-head"><div class="skel-line" style="width:60px"></div></div><div class="column-body">${cards}</div></div>`;
+  }
+  view.innerHTML = `<div class="board-header"><div class="board-title-row"><div class="skel-line" style="width:200px;height:14px"></div></div></div><div class="board">${cols}</div>`;
+}
+
+let FIRST_REFRESH = true;
 async function refresh() {
+  if (FIRST_REFRESH) renderSkeleton();
   try {
     const boardUrl = STATE.boardTrack ? `/api/board?track=${encodeURIComponent(STATE.boardTrack)}` : '/api/board';
     const [board, tracks, queue, project] = await Promise.all([
@@ -82,6 +98,7 @@ async function refresh() {
   if (STATE.currentTab === 'tracks') renderTracks();
   else if (STATE.currentTab === 'agents') renderAgents();
   else renderBoard();
+  FIRST_REFRESH = false;
 }
 
 function applyTheme(t) {
@@ -97,6 +114,19 @@ function initTheme() {
   applyTheme(t);
 }
 
+function applyDensity(d) {
+  document.documentElement.dataset.density = d;
+  try { localStorage.setItem('workflow-density', d); } catch {}
+  const icon = document.getElementById('icon-density');
+  if (icon) icon.innerHTML = d === 'compact' ? Icons.rowsTight(13, 1.5) : Icons.rows(13, 1.5);
+}
+
+function initDensity() {
+  let d = 'comfortable';
+  try { d = localStorage.getItem('workflow-density') || 'comfortable'; } catch {}
+  applyDensity(d);
+}
+
 function bindChrome() {
   for (const el of document.querySelectorAll('.tab')) {
     el.addEventListener('click', () => setTab(el.dataset.tab));
@@ -104,6 +134,9 @@ function bindChrome() {
   document.getElementById('reload')?.addEventListener('click', refresh);
   document.getElementById('theme-toggle')?.addEventListener('click', () => {
     applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+  });
+  document.getElementById('density-toggle')?.addEventListener('click', () => {
+    applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
   });
   const sel = document.getElementById('board-track');
   if (sel) sel.addEventListener('change', () => {
@@ -309,6 +342,7 @@ function bindShortcuts() {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  initDensity();
 
   // mount static icons
   document.getElementById('icon-search').innerHTML = Icons.search(13, 1.4);
