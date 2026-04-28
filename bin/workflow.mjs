@@ -36,6 +36,7 @@ Commands:
   init                       Scaffold .workflow/ + .claude/ in current project.
   migrate [--apply]          Migrate legacy layout (.workflow/iterations/, global ACTIVE) to new track-as-timeline structure. Dry-run by default.
   check-queue                Print system-reminder if .workflow/queue/ has triggers.
+  sync-subtasks              PostToolUse(TodoWrite) hook: mirror todos to task subtasks.
   help                       Show this help.
 
 Project root resolution:
@@ -217,6 +218,14 @@ function cmdCheckQueue(project) {
   child.on('exit', code => process.exit(code ?? 0));
 }
 
+function cmdSyncSubtasks(project) {
+  const env = { ...process.env, WORKFLOW_PROJECT: project };
+  const child = spawn(process.execPath, [path.join(KANBAN, 'sync_subtasks.mjs')], {
+    env, stdio: ['inherit', 'inherit', 'inherit'],
+  });
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
 function copyDirRecursive(src, dst, opts = {}) {
   const { overwrite = false } = opts;
   fs.mkdirSync(dst, { recursive: true });
@@ -274,6 +283,7 @@ switch (sub) {
   case 'init':         cmdInit(project); break;
   case 'migrate':      cmdMigrate(project, rest); break;
   case 'check-queue':  cmdCheckQueue(project); break;
+  case 'sync-subtasks': cmdSyncSubtasks(project); break;
   case 'help':
   case '--help':
   case '-h':

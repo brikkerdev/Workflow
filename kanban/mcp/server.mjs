@@ -63,15 +63,17 @@ const idArg = { task_id: { type: 'string' } };
 
 const PROTOCOL = [
   '1. workflow_claim_task(id) — sets in-progress, returns brief + rework notes if any.',
-  '2. workflow_set_subtasks(id, items) — lay out your plan once.',
-  '3. workflow_complete_subtask(id, index) — tick boxes as you go.',
-  '4. workflow_append_note(id, text) — record decisions/files touched.',
-  '5. Before submit: ensure "## How to verify" in the task .md contains',
+  '2. Plan your work via the built-in TodoWrite tool and tick items off as you',
+  '   go. A hook auto-mirrors your todo list into the task\'s "Subtasks" section,',
+  '   so the kanban always reflects your live progress — do NOT call',
+  '   workflow_set_subtasks manually.',
+  '3. workflow_append_note(id, text) — record decisions/files touched.',
+  '4. Before submit: ensure "## How to verify" in the task .md contains',
   '   concrete, runnable steps the user can follow to check every Acceptance',
   '   criterion (paths, commands, exact expected output). It is shown at the',
   '   top of the kanban Verify panel; if it is empty or vague the user cannot',
   '   test your work. Use Edit to fill it in.',
-  '6. workflow_submit_for_verify(id, summary) — when done.',
+  '5. workflow_submit_for_verify(id, summary) — when done.',
   'Do NOT git commit/push. Server handles that on user approval.',
 ].join('\n');
 
