@@ -663,11 +663,12 @@ export async function handleVerify(req, res, tid) {
   if (decision !== 'approve' && decision !== 'reject') {
     return sendJson(res, 400, { error: `decision must be approve|reject` });
   }
+  if (decision === 'reject' && !summary.trim()) {
+    return sendJson(res, 400, { error: 'reject requires a non-empty note explaining what is wrong' });
+  }
 
   const failed = items.filter(it => it.pass === false);
-  // server-side guard: if approve but any item failed → force reject
-  let effective = decision;
-  if (decision === 'approve' && failed.length > 0) effective = 'reject';
+  const effective = decision;
 
   const attempt = Number(fm.attempts || 0) + (effective === 'reject' ? 1 : 0);
 

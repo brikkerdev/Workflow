@@ -5,6 +5,7 @@ let MODAL_DEPS = [];
 let MODAL_ATTACHMENTS = [];
 let MODAL_VERIFY_OPEN = false;
 let MODAL_VERIFY_ITEMS = [];
+let MODAL_VERIFY_SUMMARY = '';
 let MODAL_DELETE_CONFIRM = false;
 
 async function openModal(id, opts = {}) {
@@ -72,9 +73,8 @@ async function openModal(id, opts = {}) {
   const verifyBtn = document.getElementById('m-verify-btn');
   if (verifyBtn) verifyBtn.style.display = 'none';
   MODAL_VERIFY_OPEN = t.status === 'verifying' || !!opts.verify;
-  MODAL_VERIFY_ITEMS = (t._criteria || []).map(c => ({
-    text: c.text, details: c.details || '', pass: null, note: '', expanded: false,
-  }));
+  MODAL_VERIFY_ITEMS = [];
+  MODAL_VERIFY_SUMMARY = '';
   renderVerifyPanel();
 
   // reset delete confirm
@@ -387,60 +387,38 @@ function renderVerifyPanel() {
   panel.classList.toggle('open', MODAL_VERIFY_OPEN);
   if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
 
-  const items = MODAL_VERIFY_ITEMS;
-  const itemsHtml = items.map((it, i) => `
-    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''}">
-      <div class="vrow-h">
-        <span class="vtxt">${escapeHtml(it.text)}</span>
-        <span class="vbtns">
-          <button data-vi="${i}" data-vp="1" class="vp ${it.pass === true ? 'sel' : ''}">✓</button>
-          <button data-vi="${i}" data-vp="0" class="vf ${it.pass === false ? 'sel' : ''}">✗</button>
-        </span>
-      </div>
-      <textarea class="vnote" data-vn="${i}" placeholder="что не так / комментарий" ${it.pass !== false ? 'style="display:none"' : ''}>${escapeHtml(it.note || '')}</textarea>
-    </div>
-  `).join('');
-
-  const anyFail = items.some(i => i.pass === false);
-  const allPass = items.length > 0 && items.every(i => i.pass === true);
   const verifyText = (MODAL_TASK._verify || '').trim();
   const howHtml = verifyText
     ? `<div class="vhow"><div class="vhow-h">How to verify</div><div class="vhow-body task-md">${renderMarkdown(verifyText)}</div></div>`
     : `<div class="vhow vhow-missing">⚠ "How to verify" пуст — агент должен описать конкретные шаги проверки в этой секции таска</div>`;
 
+  const summary = MODAL_VERIFY_SUMMARY || '';
+  const declineEnabled = summary.trim().length > 0;
+
   panel.innerHTML = `
-    <div class="vhead">Verification checklist (attempt ${(MODAL_TASK.attempts || 0) + (anyFail ? 1 : 0)})</div>
+    <div class="vhead">Verify — attempt ${(MODAL_TASK.attempts || 0) + 1}</div>
     ${howHtml}
-    ${items.length ? itemsHtml : '<div class="task-md empty">no acceptance criteria — add some to the task body</div>'}
     <div class="vrow vrow-summary">
-      <textarea id="vsummary" class="vnote" placeholder="общий summary (опционально, попадёт в коммит при approve)"></textarea>
+      <textarea id="vsummary" class="vnote" placeholder="что не так (обязательно для Decline; для Approve — опционально, попадёт в коммит)">${escapeHtml(summary)}</textarea>
     </div>
     <div class="vactions">
-      <button class="vapprove" ${allPass ? '' : 'disabled'}>Approve · commit + push + done</button>
-      <button class="vreject" ${anyFail ? '' : 'disabled'}>Reject · re-queue agent (attempt+1)</button>
+      <button class="vapprove">Approve · commit + push + done</button>
+      <button class="vreject" ${declineEnabled ? '' : 'disabled'} title="${declineEnabled ? '' : 'нужна заметка что не так'}">Decline · re-queue agent (attempt+1)</button>
     </div>
   `;
 
-  panel.querySelectorAll('button[data-vi]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const i = Number(btn.dataset.vi);
-      const v = btn.dataset.vp === '1';
-      MODAL_VERIFY_ITEMS[i].pass = v;
-      renderVerifyPanel();
-    });
-  });
-  panel.querySelectorAll('button[data-vt]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const i = Number(btn.dataset.vt);
-      MODAL_VERIFY_ITEMS[i].expanded = !MODAL_VERIFY_ITEMS[i].expanded;
-      renderVerifyPanel();
-    });
-  });
-  panel.querySelectorAll('textarea[data-vn]').forEach(ta => {
+  const ta = panel.querySelector('#vsummary');
+  if (ta) {
     ta.addEventListener('input', () => {
-      MODAL_VERIFY_ITEMS[Number(ta.dataset.vn)].note = ta.value;
+      MODAL_VERIFY_SUMMARY = ta.value;
+      const declineBtn = panel.querySelector('.vreject');
+      if (declineBtn) {
+        const ok = ta.value.trim().length > 0;
+        declineBtn.disabled = !ok;
+        declineBtn.title = ok ? '' : 'нужна заметка что не так';
+      }
     });
-  });
+  }
   panel.querySelector('.vapprove')?.addEventListener('click', () => submitVerify('approve'));
   panel.querySelector('.vreject')?.addEventListener('click', () => submitVerify('reject'));
 }
@@ -448,11 +426,14 @@ function renderVerifyPanel() {
 async function submitVerify(decision) {
   if (!MODAL_TASK) return;
   const summary = (document.getElementById('vsummary')?.value || '').trim();
-  const items = MODAL_VERIFY_ITEMS.map(it => ({ text: it.text, pass: it.pass === true, note: it.note || '' }));
+  if (decision === 'reject' && !summary) {
+    toast('Decline требует заметку: что именно не так', 'error');
+    return;
+  }
   try {
     const r = await api(`/api/task/${MODAL_TASK.id}/verify`, {
       method: 'POST',
-      body: JSON.stringify({ decision, summary, items }),
+      body: JSON.stringify({ decision, summary }),
     });
     if (r.result === 'done') toast(`${MODAL_TASK.id} ✓ done · commit ${r.commit?.slice(0, 7) || ''}`, 'success');
     else if (r.result === 'committing') toast(`${MODAL_TASK.id} → commit + push в фоне…`);
@@ -509,6 +490,7 @@ function closeModal() {
   MODAL_ATTACHMENTS = [];
   MODAL_VERIFY_OPEN = false;
   MODAL_VERIFY_ITEMS = [];
+  MODAL_VERIFY_SUMMARY = '';
   MODAL_DELETE_CONFIRM = false;
 }
 
