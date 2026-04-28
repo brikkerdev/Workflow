@@ -75,9 +75,13 @@ let FIRST_REFRESH = true;
 let LAST_SIG = '';
 
 function dataSignature() {
-  const tasks = (STATE.board.tasks || []).map(t =>
-    `${t.id}|${t.status}|${t.assignee}|${t.estimate || ''}|${(t.deps || []).join(',')}|${t.attempts || 0}|${t.title || ''}`
-  ).sort().join('\n');
+  const tasks = (STATE.board.tasks || []).map(t => {
+    const subs = t._subtasks || [];
+    const subSig = `${subs.length}/${subs.filter(s => s.checked).length}`;
+    const st = t._stats;
+    const tokSig = st ? `${st.input || 0}+${st.output || 0}` : '';
+    return `${t.id}|${t.status}|${t.assignee}|${t.estimate || ''}|${(t.deps || []).join(',')}|${t.attempts || 0}|${t.title || ''}|${subSig}|${tokSig}`;
+  }).sort().join('\n');
   const tracks = (STATE.tracks.tracks || []).map(tr =>
     `${tr.slug}|${tr.active || ''}|${(tr.iterations || []).map(it => `${it.id}:${it.status}:${it.task_count}:${it.done_count || 0}`).join(';')}`
   ).sort().join('\n');
