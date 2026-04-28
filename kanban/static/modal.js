@@ -381,43 +381,29 @@ function renderVerifyPanel() {
   if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
 
   const items = MODAL_VERIFY_ITEMS;
-  const missingDetails = items.filter(it => !(it.details && it.details.trim())).length;
-  const itemsHtml = items.map((it, i) => {
-    const hasDetails = it.details && it.details.trim();
-    const expanded = it.expanded;
-    const chevTitle = hasDetails
-      ? (expanded ? 'collapse' : 'how to test')
-      : 'no verify hints — add 1-3 indented lines under this item in Acceptance criteria';
-    const chevGlyph = hasDetails ? (expanded ? '▾' : '▸') : '∅';
-    const detailsBody = expanded
-      ? (hasDetails
-          ? `<div class="vdetails">${renderMarkdown(it.details)}</div>`
-          : `<div class="vdetails vdetails-missing">no verify steps — edit <b>Acceptance criteria</b> section and add 1-3 indented lines under this <code>- [ ]</code></div>`)
-      : '';
-    return `
-    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''} ${expanded ? 'expanded' : ''} ${hasDetails ? '' : 'no-details'}">
+  const itemsHtml = items.map((it, i) => `
+    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''}">
       <div class="vrow-h">
-        <button class="vchev ${hasDetails ? '' : 'vchev-empty'}" data-vt="${i}" title="${escapeHtml(chevTitle)}">${chevGlyph}</button>
         <span class="vtxt">${escapeHtml(it.text)}</span>
         <span class="vbtns">
           <button data-vi="${i}" data-vp="1" class="vp ${it.pass === true ? 'sel' : ''}">✓</button>
           <button data-vi="${i}" data-vp="0" class="vf ${it.pass === false ? 'sel' : ''}">✗</button>
         </span>
       </div>
-      ${detailsBody}
       <textarea class="vnote" data-vn="${i}" placeholder="что не так / комментарий" ${it.pass !== false ? 'style="display:none"' : ''}>${escapeHtml(it.note || '')}</textarea>
     </div>
-  `; }).join('');
+  `).join('');
 
   const anyFail = items.some(i => i.pass === false);
   const allPass = items.length > 0 && items.every(i => i.pass === true);
-  const hintHtml = missingDetails > 0
-    ? `<div class="vmissing-hint">⚠ ${missingDetails} of ${items.length} items have no verify hints — agent should add indented lines under each <code>- [ ]</code> in Acceptance criteria</div>`
-    : '';
+  const verifyText = (MODAL_TASK._verify || '').trim();
+  const howHtml = verifyText
+    ? `<div class="vhow"><div class="vhow-h">How to verify</div><div class="vhow-body task-md">${renderMarkdown(verifyText)}</div></div>`
+    : `<div class="vhow vhow-missing">⚠ "How to verify" пуст — агент должен описать конкретные шаги проверки в этой секции таска</div>`;
 
   panel.innerHTML = `
     <div class="vhead">Verification checklist (attempt ${(MODAL_TASK.attempts || 0) + (anyFail ? 1 : 0)})</div>
-    ${hintHtml}
+    ${howHtml}
     ${items.length ? itemsHtml : '<div class="task-md empty">no acceptance criteria — add some to the task body</div>'}
     <div class="vrow vrow-summary">
       <textarea id="vsummary" class="vnote" placeholder="общий summary (опционально, попадёт в коммит при approve)"></textarea>
