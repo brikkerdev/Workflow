@@ -138,9 +138,10 @@ For placeholder icons (where it matters that they are visible immediately after 
 
 ## Workflow integration
 
-When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
-1. Read the task file fully — Goal, Context links, Acceptance criteria, How to verify.
-2. Build/edit UI per Acceptance criteria. Always validate visually via Scene-view screenshot in prefab stage.
-3. Append to **Notes** ONLY if something non-obvious came up (missing asset, hierarchy constraint, anchoring caveat). Skip routine "I touched these prefabs" recaps.
-4. Update the task `status` frontmatter to `review`.
-5. Tell the user the task is ready for verification per its `How to verify` block.
+When dispatched on a workflow task:
+1. Call `workflow_claim_task("<id>")` first — sets in-progress, returns the protocol and brief.
+2. If the dispatch prompt includes `## Prepared Context` — trust it. Work from the listed files only.
+   If there is no Prepared Context — read the task file and the 1-2 most relevant prefabs/scripts from Context links.
+3. Build/edit UI per Acceptance criteria. Always validate visually via Scene-view screenshot in prefab stage.
+4. Append to **Notes** via `workflow_append_note` ONLY if something non-obvious came up. Skip routine recaps.
+5. Call `workflow_submit_for_verify("<id>", "<one-line summary>")` when done.

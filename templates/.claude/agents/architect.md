@@ -38,10 +38,9 @@ You are the system architect of a Unity project. Your job is to design solutions
 
 ## Workflow integration
 
-When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
-1. Read the task file fully — Goal, Context links, Acceptance criteria.
-2. Read referenced docs from `docs/` and `technical-docs/`.
-3. Produce the design as response.
-4. Append the result + rationale + open questions to the **Notes** section of the task file via Edit.
-5. Update the task `status` frontmatter to `review`.
-6. Tell the user where to find the result and what to verify.
+When dispatched on a workflow task:
+1. Call `workflow_claim_task("<id>")` first — sets in-progress, returns the protocol and brief.
+2. If the dispatch prompt includes `## Prepared Context` — use it as the starting point. Read referenced docs from `docs/` and `technical-docs/` only if design depth requires it.
+3. Produce the design per Acceptance criteria.
+4. Append the full design output + rationale + open questions to **Notes** via `workflow_append_note`.
+5. Call `workflow_submit_for_verify("<id>", "<one-line summary>")` when done.

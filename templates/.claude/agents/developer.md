@@ -36,9 +36,10 @@ You are a Unity engineer. You write C# code for Unity focused on readability, si
 
 ## Workflow integration
 
-When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
-1. Read the task file fully — Goal, Context links, Acceptance criteria, How to verify.
-2. Implement per Acceptance criteria.
-3. Append to **Notes** ONLY if something non-obvious came up (a hidden constraint, a workaround, a caveat the user must know to verify). Skip routine "I changed X.cs and Y.cs" recaps — those are noise.
-4. Update the task `status` frontmatter to `review`.
-5. Tell the user the task is ready for verification per its `How to verify` block.
+When dispatched on a workflow task:
+1. Call `workflow_claim_task("<id>")` first — sets in-progress, returns the protocol and brief.
+2. If the dispatch prompt includes `## Prepared Context` — trust it completely. Edit only the listed files. Do NOT run Glob/Grep/Read beyond them.
+   If there is no Prepared Context — read the task file and the 1-2 most relevant files from Context links.
+3. Implement per Acceptance criteria.
+4. Append to **Notes** via `workflow_append_note` ONLY if something non-obvious came up — a hidden constraint, a workaround, a caveat for verification. Skip routine recaps.
+5. Call `workflow_submit_for_verify("<id>", "<one-line summary>")` when done.

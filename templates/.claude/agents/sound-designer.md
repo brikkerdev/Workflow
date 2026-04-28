@@ -80,9 +80,10 @@ Every player-triggered sound is engineered to feel good in the hand. The feel ru
 
 ## Workflow integration
 
-When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
-1. Read the task file fully — Goal, Context links, Acceptance criteria, How to verify.
-2. Execute per Acceptance criteria within your domain.
-3. Append to **Notes** ONLY if something non-obvious came up (missing asset, constraint, blocker). Skip routine "I produced X" recaps.
-4. Update the task `status` frontmatter to `review`.
-5. Tell the user the task is ready for verification per its `How to verify` block.
+When dispatched on a workflow task:
+1. Call `workflow_claim_task("<id>")` first — sets in-progress, returns the protocol and brief.
+2. If the dispatch prompt includes `## Prepared Context` — trust it. Work from the listed assets/paths only.
+   If there is no Prepared Context — read the task file and audit existing sounds from Context links.
+3. Execute per Acceptance criteria within your domain.
+4. Append to **Notes** via `workflow_append_note` ONLY if something non-obvious came up. Skip routine recaps.
+5. Call `workflow_submit_for_verify("<id>", "<one-line summary>")` when done.
