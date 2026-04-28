@@ -5,6 +5,15 @@
 
 import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
+
+const LOG = path.join(process.env.WORKFLOW_PROJECT || process.cwd(), '.workflow', 'stats', '.hook.log');
+function log(...a) {
+  try {
+    fs.mkdirSync(path.dirname(LOG), { recursive: true });
+    fs.appendFileSync(LOG, `[${new Date().toISOString()}] ${a.join(' ')}\n`);
+  } catch {}
+}
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -62,14 +71,17 @@ function postStats(taskId, sessionId, totals) {
 
 async function main() {
   const raw = await readStdin();
-  if (!raw) process.exit(0);
+  if (!raw) { log('no stdin'); process.exit(0); }
   let payload;
-  try { payload = JSON.parse(raw); } catch { process.exit(0); }
+  try { payload = JSON.parse(raw); } catch (e) { log('bad json:', e.message); process.exit(0); }
 
+  log(`fired transcript=${payload.transcript_path || '?'} session=${payload.session_id || '?'}`);
   const result = sumUsage(payload.transcript_path);
-  if (!result) process.exit(0);
+  if (!result) { log('no task marker found in transcript'); process.exit(0); }
+  log(`tid=${result.tid} totals=`, JSON.stringify(result.totals));
   const sessionId = payload.session_id || 'unknown';
-  await postStats(result.tid, sessionId, result.totals);
+  const code = await postStats(result.tid, sessionId, result.totals);
+  log(`POST status=${code}`);
   process.exit(0);
 }
 
