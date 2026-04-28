@@ -17,6 +17,8 @@ const ICON_PATHS = {
   user:      '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0114 0"/>',
   reload:    '<path d="M4 12a8 8 0 0114-5.3L20 8M20 4v4h-4"/><path d="M20 12a8 8 0 01-14 5.3L4 16M4 20v-4h4"/>',
   sparkle:   '<path d="M12 4l1.5 4.5L18 10l-4.5 1.5L12 16l-1.5-4.5L6 10l4.5-1.5z"/>',
+  queue:     '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  layers:    '<path d="M12 4l9 5-9 5-9-5 9-5z"/><path d="M3 14l9 5 9-5"/>',
 };
 
 // Map agent role / name → icon key.

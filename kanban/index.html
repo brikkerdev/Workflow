@@ -1,115 +1,171 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <title>Workflow — Kanban</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body class="app">
 
 <header class="topbar">
   <div class="topbar-left">
     <span class="brand">Workflow</span>
-    <span class="brand-divider"></span>
-    <button class="iter-button" id="iter-button">
-      <span id="iter-name">loading…</span>
-      <span class="chev" id="icon-chev"></span>
+    <span class="topbar-sep"></span>
+    <select id="board-track" class="select-native" title="filter board by track"></select>
+    <span class="topbar-sep"></span>
+    <button class="select" id="iter-button" type="button">
+      <span class="select-label">iter</span>
+      <span id="iter-name">—</span>
+      <span class="select-caret" id="icon-chev"></span>
     </button>
-    <select id="board-track" class="track-picker" title="filter board by track"></select>
   </div>
+
+  <div class="topbar-center">
+    <nav class="tabs">
+      <button class="tab active" data-tab="iteration">Iteration<span class="badge" id="iteration-badge"></span></button>
+      <button class="tab" data-tab="tracks">Tracks<span class="badge" id="tracks-badge"></span></button>
+      <button class="tab" data-tab="agents">Agents<span class="badge" id="agents-badge"></span></button>
+    </nav>
+  </div>
+
   <div class="topbar-right">
-    <div class="search-stub">
+    <label class="search" id="search-stub">
       <span id="icon-search"></span>
-      <span>Search</span>
-      <span class="kbd">⌘K</span>
-    </div>
-    <button class="reload-btn" id="theme-toggle" title="toggle theme">
+      <input type="text" id="search-input" placeholder="Search">
+      <span class="kbd">/</span>
+    </label>
+    <button class="iconbtn" id="queue-btn" title="queue (q)">
+      <span id="icon-queue"></span>
+      <span class="qcount" id="queue-count" hidden></span>
+    </button>
+    <button class="iconbtn" id="kbd-help" title="keyboard shortcuts (?)">?</button>
+    <button class="iconbtn" id="theme-toggle" title="toggle theme">
       <span id="icon-theme"></span>
     </button>
-    <button class="reload-btn" id="reload" title="reload">
+    <button class="iconbtn" id="reload" title="reload (r)">
       <span id="icon-reload"></span>
     </button>
   </div>
 </header>
 
-<nav class="tabs">
-  <button class="tab active" data-tab="iteration">Iterations</button>
-  <button class="tab" data-tab="tracks">Tracks<span class="badge" id="tracks-badge"></span></button>
-  <button class="tab" data-tab="agents">Agents<span class="badge" id="agents-badge"></span></button>
-</nav>
+<main class="workspace view active" id="view-iteration"></main>
+<main class="workspace view" id="view-tracks"></main>
+<main class="workspace view" id="view-agents"></main>
 
-<main class="view active" id="view-iteration"></main>
-<main class="view" id="view-tracks"></main>
-<main class="view" id="view-agents"></main>
-
-<div class="queue-indicator hidden" id="queue-indicator">
-  <span class="queue-blob-wrap">
-    <span class="queue-blob"></span>
-    <span class="queue-ring"></span>
-  </span>
-  <span class="queue-text" id="queue-text">queue empty</span>
-  <span class="queue-sub" id="queue-sub"></span>
-</div>
-
+<!-- Task detail modal -->
 <div class="modal-bg" id="modal-bg">
-  <div class="modal" id="modal" role="dialog" aria-modal="true">
-    <header>
-      <span class="id" id="m-id"></span>
-      <span class="title" id="m-title"></span>
+  <div class="modal task-modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <span class="dot" id="m-dot"></span>
+      <span class="modal-title mono" id="m-id"></span>
+      <span class="modal-title-sep">·</span>
+      <span class="modal-title-slug" id="m-title"></span>
       <span class="attempts-badge" id="m-attempts"></span>
-      <button class="close" id="m-close" aria-label="close">×</button>
-    </header>
-    <div class="body">
-      <div class="row"><label>Status</label><select id="m-status"></select></div>
-      <div class="row"><label>Assignee</label><select id="m-assignee"></select></div>
-      <div class="row"><label>Estimate</label>
-        <select id="m-estimate"><option>S</option><option>M</option><option>L</option></select>
-      </div>
-      <div class="row row-top"><label>Deps</label>
-        <div class="deps-picker">
-          <div class="chips" id="m-deps-chips"></div>
-          <select id="m-deps-add" class="deps-add"><option value="">+ add dep…</option></select>
+      <div class="modal-close"><button class="iconbtn" id="m-close" aria-label="close">×</button></div>
+    </div>
+    <div class="modal-body">
+      <section id="m-verify-panel" class="verify-panel"></section>
+      <div class="task-modal-grid">
+        <div>
+          <div class="task-section-label">Goal</div>
+          <div class="task-md" id="m-goal"></div>
+
+          <div class="task-section-label">Context</div>
+          <div class="task-md" id="m-context"></div>
+
+          <div class="task-section-label">Acceptance criteria</div>
+          <div class="task-md" id="m-acceptance"></div>
+
+          <div class="task-section-label">How to verify</div>
+          <div class="task-md" id="m-verify"></div>
+
+          <div class="task-section-label">Subtasks</div>
+          <div id="m-subtasks"></div>
+
+          <div class="task-section-label">Notes</div>
+          <div class="task-md" id="m-notes"></div>
+
+          <div class="task-section-label">Attachments</div>
+          <div class="attachments" id="m-attachments"></div>
+        </div>
+        <div>
+          <div class="task-section-label">Status</div>
+          <select class="input" id="m-status"></select>
+
+          <div class="task-section-label">Assignee</div>
+          <select class="input" id="m-assignee"></select>
+
+          <div class="task-section-label">Estimate</div>
+          <select class="input" id="m-estimate">
+            <option>S</option><option>M</option><option>L</option>
+          </select>
+
+          <div class="task-section-label">Deps</div>
+          <div class="dep-picker" id="m-deps-picker">
+            <span id="m-deps-chips" style="display:contents"></span>
+            <input type="text" id="m-deps-input" placeholder="+ add dep">
+          </div>
+          <div class="dep-suggest" id="m-deps-suggest" style="display:none"></div>
         </div>
       </div>
-      <section><h3>Attachments</h3>
-        <div class="att-grid" id="m-attachments"></div>
-      </section>
-      <section><h3>Goal</h3><div class="content" id="m-goal"></div></section>
-      <section><h3>Context</h3><div class="content" id="m-context"></div></section>
-      <section><h3>Acceptance criteria</h3><div class="content" id="m-acceptance"></div></section>
-      <section><h3>How to verify</h3><div class="content" id="m-verify"></div></section>
-      <section><h3>Subtasks <span class="hint">(agent progress)</span></h3><div id="m-subtasks"></div></section>
-      <section><h3>Notes</h3><div class="content" id="m-notes"></div></section>
-      <section id="m-verify-panel" class="verify-panel"></section>
     </div>
-    <footer>
-      <button id="m-verify-btn" class="primary" style="display:none">✓ Verify</button>
-      <button id="m-dispatch" class="primary">▶ Start</button>
-      <button id="m-save">Save</button>
-      <button id="m-cancel">Close</button>
-    </footer>
+    <div class="modal-foot has-danger">
+      <div id="m-danger-zone">
+        <button class="btn btn-danger" id="m-delete" style="display:none">Delete</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" id="m-verify-btn" style="display:none">✓ Verify</button>
+        <button class="btn btn-ghost" id="m-dispatch">▶ Start agent</button>
+        <button class="btn btn-ghost" id="m-cancel">Close</button>
+        <button class="btn btn-primary" id="m-save">Save</button>
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="modal-bg form-bg" id="form-bg">
-  <div class="modal form-modal" role="dialog" aria-modal="true">
-    <header>
-      <span class="title" id="form-title"></span>
-      <button class="close" id="form-cancel" aria-label="close">×</button>
-    </header>
-    <div class="body" id="form-body"></div>
-    <footer>
-      <button id="form-save" class="primary">Save</button>
-      <button id="form-cancel-2" onclick="closeFormModal()">Cancel</button>
-    </footer>
+<!-- Track / Iter form modal -->
+<div class="modal-bg" id="form-bg">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <span class="modal-title" id="form-title"></span>
+      <div class="modal-close"><button class="iconbtn" id="form-cancel" aria-label="close">×</button></div>
+    </div>
+    <div class="modal-body" id="form-body"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="form-cancel-2" onclick="closeFormModal()">Cancel</button>
+      <button class="btn btn-primary" id="form-save">Save</button>
+    </div>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<!-- Queue side-sheet -->
+<aside class="sidesheet" id="queue-sheet" aria-hidden="true">
+  <div class="sheet-head">
+    <span class="sheet-title">Queue</span>
+    <span class="sheet-sub" id="queue-sheet-sub"></span>
+    <div class="modal-close"><button class="iconbtn" id="queue-sheet-close" aria-label="close">×</button></div>
+  </div>
+  <div class="sheet-body" id="queue-sheet-body"></div>
+</aside>
+
+<!-- Keyboard help overlay -->
+<div class="modal-bg" id="kbd-bg">
+  <div class="modal kbd-overlay" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <span class="modal-title">Keyboard shortcuts</span>
+      <div class="modal-close"><button class="iconbtn" id="kbd-close" aria-label="close">×</button></div>
+    </div>
+    <div class="kbd-grid" id="kbd-grid"></div>
+  </div>
+</div>
+
+<!-- Toast stack -->
+<div class="toasts" id="toasts"></div>
+<div class="toast legacy" id="toast"></div>
 
 <script src="/static/icons.js"></script>
 <script src="/static/agentColors.js"></script>

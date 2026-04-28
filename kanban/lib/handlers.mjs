@@ -454,7 +454,9 @@ export async function handlePatch(req, res, tid) {
     if (typeof v === 'string') v = v.split(',').map(s => s.trim()).filter(Boolean);
     fm.deps = v;
   }
-  saveTask(p, fm, body);
+  let nextBody = body;
+  if ('body' in patch && typeof patch.body === 'string') nextBody = patch.body;
+  saveTask(p, fm, nextBody);
   fm._path = rel(p);
   sendJson(res, 200, fm);
 }

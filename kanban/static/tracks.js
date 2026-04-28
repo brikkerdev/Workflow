@@ -1,91 +1,176 @@
-// Tracks tab: list of tracks; each one expands into a vertical iteration
-// timeline with full CRUD (create/edit/activate/archive/reorder).
+// Workflow — Tracks page (design markup: track-section / track-head grid / iter-row s-status).
 
-const ITER_STATUS_GLYPH = {
-  planned:   '◯',
-  active:    '●',
-  done:      '✓',
-  abandoned: '×',
-};
-
-let TRACKS_EXPANDED = new Set();
+const ITER_GLYPHS = { planned: '◯', active: '●', done: '✓', abandoned: '×' };
 
 function renderTracks() {
   const view = document.getElementById('view-tracks');
   view.innerHTML = '';
-  const wrap = document.createElement('div');
-  wrap.className = 'tracks-view';
 
-  // Top bar with "+ New track"
-  const bar = document.createElement('div');
-  bar.className = 'tracks-bar';
-  bar.innerHTML = `
-    <h2 class="tracks-title">Tracks</h2>
-    <button class="primary-btn" id="new-track-btn">+ New track</button>
-  `;
-  bar.querySelector('#new-track-btn').addEventListener('click', () => openTrackForm(null));
-  wrap.appendChild(bar);
+  const page = document.createElement('div');
+  page.className = 'tracks-page';
 
   const tracks = STATE.tracks.tracks || [];
+
+  // header
+  const header = document.createElement('div');
+  header.className = 'tracks-header';
+  const archivedCount = 0; // backend doesn't expose archived list
+  header.innerHTML = `
+    <div>
+      <h1>Tracks</h1>
+      <div class="subtitle mono">${tracks.length} active${archivedCount ? ' · ' + archivedCount + ' archived' : ''}</div>
+    </div>
+    <button class="btn btn-primary btn-lg" id="new-track-btn">+ New track</button>
+  `;
+  header.querySelector('#new-track-btn').addEventListener('click', () => openTrackForm(null));
+  page.appendChild(header);
+
   if (!tracks.length) {
     const empty = document.createElement('div');
-    empty.className = 'empty';
-    empty.innerHTML = `no tracks. click <b>+ New track</b> or run <b>/new-track</b>.`;
-    wrap.appendChild(empty);
-    view.appendChild(wrap);
+    empty.className = 'tracks-empty';
+    empty.innerHTML = `<h2>No tracks</h2><p>click <span class="cmd">+ New track</span> or run <span class="cmd">/new-track</span></p>`;
+    page.appendChild(empty);
+    view.appendChild(page);
     return;
   }
 
-  for (const tr of tracks) wrap.appendChild(renderTrackSection(tr));
-  view.appendChild(wrap);
+  const list = document.createElement('div');
+  list.className = 'tracks-list';
+  for (const tr of tracks) list.appendChild(renderTrackSection(tr));
+  page.appendChild(list);
+
+  view.appendChild(page);
 }
 
 function renderTrackSection(tr) {
+  const expanded = STATE.expandedTracks.has(tr.slug);
   const sec = document.createElement('div');
-  sec.className = 'track-section';
-  const expanded = TRACKS_EXPANDED.has(tr.slug);
+  sec.className = 'track-section' + (expanded ? ' expanded' : '');
+
   const counts = countIters(tr.iterations || []);
-  const goal = extractGoalPreview(tr.body || '');
+  const preview = extractGoalPreview(tr.body || '');
+  const title = tr.fm?.title || '';
 
-  sec.innerHTML = `
-    <div class="track-h">
-      <button class="track-toggle" data-act="toggle">${expanded ? '▾' : '▸'}</button>
-      <span class="slug">${escapeHtml(tr.slug)}</span>
-      ${tr.fm?.title ? `<span class="track-title">${escapeHtml(tr.fm.title)}</span>` : ''}
-      <span class="track-counts">
-        <span class="ct ct-planned">◯ ${counts.planned}</span>
-        <span class="ct ct-active">● ${counts.active}</span>
-        <span class="ct ct-done">✓ ${counts.done}</span>
-      </span>
-      <span class="track-goal">${escapeHtml(goal)}</span>
-      <span class="track-h-actions">
-        <button data-act="board" title="show in kanban">⊞</button>
-        <button data-act="new-iter" title="new iteration">+ iter</button>
-        <button data-act="edit" title="edit track">✎</button>
-        <button data-act="archive" title="archive track">⌫</button>
-      </span>
+  const head = document.createElement('div');
+  head.className = 'track-head';
+  head.innerHTML = `
+    <span class="track-toggle">▸</span>
+    <span class="track-slug">${escapeHtml(tr.slug)}</span>
+    <div style="display:flex;align-items:center;gap:14px;min-width:0">
+      ${title ? `<span class="track-title">${escapeHtml(title)}</span>` : ''}
+      ${preview ? `<span class="track-preview">${escapeHtml(preview)}</span>` : ''}
     </div>
-    <div class="track-timeline ${expanded ? 'open' : ''}"></div>
+    <div class="track-meta">
+      <span class="iter-counter c-planned"><span class="iter-counter-glyph">◯</span>${counts.planned}</span>
+      <span class="iter-counter c-active"><span class="iter-counter-glyph">●</span>${counts.active}</span>
+      <span class="iter-counter c-done"><span class="iter-counter-glyph">✓</span>${counts.done}</span>
+    </div>
+    <div class="track-actions">
+      <button class="iconbtn" title="Open in board" data-act="board">⊞</button>
+      <button class="iconbtn" title="New iteration" data-act="new-iter">+</button>
+      <button class="iconbtn" title="Edit track" data-act="edit">✎</button>
+      <button class="iconbtn" title="Archive track" data-act="archive">⌫</button>
+    </div>
   `;
-  const tl = sec.querySelector('.track-timeline');
-  if (expanded) renderTimeline(tl, tr);
+  head.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-act]');
+    if (btn) {
+      e.stopPropagation();
+      const act = btn.dataset.act;
+      if (act === 'board') {
+        STATE.boardTrack = tr.slug;
+        const sel = document.getElementById('board-track');
+        if (sel) sel.value = tr.slug;
+        setTab('iteration');
+        refresh();
+      } else if (act === 'new-iter') openIterForm(tr.slug, null);
+      else if (act === 'edit') openTrackForm(tr.slug);
+      else if (act === 'archive') archiveTrack(tr.slug);
+      return;
+    }
+    // toggle
+    if (STATE.expandedTracks.has(tr.slug)) STATE.expandedTracks.delete(tr.slug);
+    else STATE.expandedTracks.add(tr.slug);
+    renderTracks();
+  });
+  sec.appendChild(head);
 
-  sec.addEventListener('click', e => {
+  if (expanded) {
+    const body = document.createElement('div');
+    body.className = 'track-body';
+    const iters = tr.iterations || [];
+    if (!iters.length) {
+      body.innerHTML = `<div class="iter-empty">no iterations yet. click <b>+</b> on the right.</div>`;
+    } else {
+      for (const it of iters) body.appendChild(renderIterRow(tr, it));
+    }
+    sec.appendChild(body);
+  }
+
+  return sec;
+}
+
+function renderIterRow(tr, it) {
+  const row = document.createElement('div');
+  row.className = `iter-row s-${it.status}`;
+  row.dataset.id = it.id;
+
+  const isPlanned = it.status === 'planned';
+  row.draggable = isPlanned;
+
+  const isActive = tr.active === it.id || it.status === 'active';
+  const taskCount = it.task_count || 0;
+
+  const actBtns = [];
+  if (isPlanned) actBtns.push(`<button class="iconbtn" data-act="activate" title="Activate">▶</button>`);
+  if (isActive) actBtns.push(`<button class="iconbtn" data-act="board" title="Open in board">⊞</button>`);
+  actBtns.push(`<button class="iconbtn" data-act="edit" title="Edit">✎</button>`);
+  if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
+  if (it.status !== 'done' && it.status !== 'abandoned') actBtns.push(`<button class="iconbtn" data-act="archive" title="Archive (close as done)">⌫</button>`);
+
+  row.innerHTML = `
+    <span class="iter-glyph">${ITER_GLYPHS[it.status] || '·'}</span>
+    <span class="iter-id">${escapeHtml(it.id)}</span>
+    <span class="iter-slug">${escapeHtml(it.slug)}</span>
+    <span class="iter-title">${escapeHtml(it.title || it.fm?.title || '')}${isActive ? '<span class="iter-active-badge">active</span>' : ''}</span>
+    <span class="iter-tasks">${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}</span>
+    <div class="iter-actions">${actBtns.join('')}</div>
+  `;
+
+  if (isPlanned) {
+    row.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ track: tr.slug, id: it.id }));
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  }
+  row.addEventListener('dragover', e => {
+    if (!isPlanned) return;
+    e.preventDefault();
+    row.classList.add('drop-target');
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+  row.addEventListener('drop', async e => {
+    e.preventDefault();
+    row.classList.remove('drop-target');
+    if (!isPlanned) return;
+    let data;
+    try { data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}'); } catch { return; }
+    if (data.track !== tr.slug || !data.id || data.id === it.id) return;
+    await reorderIters(tr.slug, data.id, it.id);
+  });
+
+  row.addEventListener('click', e => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     e.stopPropagation();
     const act = btn.dataset.act;
-    if (act === 'toggle') {
-      if (TRACKS_EXPANDED.has(tr.slug)) TRACKS_EXPANDED.delete(tr.slug);
-      else TRACKS_EXPANDED.add(tr.slug);
-      renderTracks();
-    } else if (act === 'new-iter') {
-      openIterForm(tr.slug, null);
-    } else if (act === 'edit') {
-      openTrackForm(tr.slug);
-    } else if (act === 'archive') {
-      archiveTrack(tr.slug);
-    } else if (act === 'board') {
+    if (act === 'activate') activateIter(tr.slug, it.id);
+    else if (act === 'edit') openIterForm(tr.slug, it.id);
+    else if (act === 'archive') archiveIter(tr.slug, it.id);
+    else if (act === 'delete') deleteIter(tr.slug, it.id);
+    else if (act === 'board') {
       STATE.boardTrack = tr.slug;
       const sel = document.getElementById('board-track');
       if (sel) sel.value = tr.slug;
@@ -94,82 +179,7 @@ function renderTrackSection(tr) {
     }
   });
 
-  return sec;
-}
-
-function renderTimeline(container, tr) {
-  container.innerHTML = '';
-  const iters = tr.iterations || [];
-  if (!iters.length) {
-    container.innerHTML = `<div class="empty-iter">no iterations yet. click <b>+ iter</b>.</div>`;
-    return;
-  }
-
-  // Drag-drop reorder for planned iterations.
-  for (const it of iters) {
-    const row = document.createElement('div');
-    row.className = `iter-row iter-${it.status}`;
-    row.draggable = it.status === 'planned';
-    row.dataset.id = it.id;
-    const isActive = tr.active === it.id;
-    row.innerHTML = `
-      <span class="iter-glyph" title="${it.status}">${ITER_STATUS_GLYPH[it.status] || '·'}</span>
-      <span class="iter-id">${escapeHtml(it.id)}</span>
-      <span class="iter-slug">${escapeHtml(it.slug)}</span>
-      ${it.title ? `<span class="iter-title">${escapeHtml(it.title)}</span>` : ''}
-      <span class="iter-meta">
-        <span>${it.task_count} ${it.task_count === 1 ? 'task' : 'tasks'}</span>
-        ${isActive ? `<span class="iter-active-tag">ACTIVE</span>` : ''}
-      </span>
-      <span class="iter-actions">
-        ${it.status !== 'active' && it.status !== 'done' ? `<button data-iact="activate" data-iid="${it.id}" title="activate">▶</button>` : ''}
-        ${isActive ? `<button data-iact="board" data-iid="${it.id}" title="open in kanban">⊞</button>` : ''}
-        <button data-iact="edit" data-iid="${it.id}" title="edit">✎</button>
-        ${it.status === 'planned' ? `<button data-iact="delete" data-iid="${it.id}" title="delete">×</button>` : ''}
-        ${it.status !== 'done' && it.status !== 'abandoned' ? `<button data-iact="archive" data-iid="${it.id}" title="close (done)">⌫</button>` : ''}
-      </span>
-    `;
-
-    row.addEventListener('dragstart', e => {
-      if (it.status !== 'planned') { e.preventDefault(); return; }
-      e.dataTransfer.setData('text/plain', it.id);
-      row.classList.add('drag');
-    });
-    row.addEventListener('dragend', () => row.classList.remove('drag'));
-    row.addEventListener('dragover', e => {
-      if (it.status !== 'planned') return;
-      e.preventDefault();
-      row.classList.add('drop');
-    });
-    row.addEventListener('dragleave', () => row.classList.remove('drop'));
-    row.addEventListener('drop', async e => {
-      e.preventDefault();
-      row.classList.remove('drop');
-      const fromId = e.dataTransfer.getData('text/plain');
-      if (!fromId || fromId === it.id) return;
-      await reorderIters(tr.slug, fromId, it.id);
-    });
-
-    row.addEventListener('click', e => {
-      const b = e.target.closest('button[data-iact]');
-      if (!b) return;
-      e.stopPropagation();
-      const iid = b.dataset.iid;
-      const act = b.dataset.iact;
-      if (act === 'activate') activateIter(tr.slug, iid);
-      else if (act === 'edit') openIterForm(tr.slug, iid);
-      else if (act === 'archive') archiveIter(tr.slug, iid);
-      else if (act === 'delete') deleteIter(tr.slug, iid);
-      else if (act === 'board') {
-        STATE.boardTrack = tr.slug;
-        const sel = document.getElementById('board-track');
-        if (sel) sel.value = tr.slug;
-        setTab('iteration');
-        refresh();
-      }
-    });
-    container.appendChild(row);
-  }
+  return row;
 }
 
 function countIters(iters) {
@@ -180,8 +190,7 @@ function countIters(iters) {
 
 function extractGoalPreview(body) {
   if (!body) return '';
-  const startRe = /^##\s+Цель\s*$/m;
-  const m = startRe.exec(body);
+  const m = /^##\s+Цель\s*$/m.exec(body);
   if (!m) return '';
   const start = m.index + m[0].length;
   const tail = body.slice(start);
@@ -190,25 +199,20 @@ function extractGoalPreview(body) {
   return body.slice(start, end).trim().replace(/\s+/g, ' ').slice(0, 120);
 }
 
-// ---------- Track form ----------
+// ─── Track form ─────────────────────────────────────────────────────────────
 
 async function openTrackForm(slug) {
   let t = null;
   if (slug) {
-    try {
-      const r = await api(`/api/track/${encodeURIComponent(slug)}`);
-      t = r.track;
-    } catch (e) {
-      toast(`load failed: ${e.message}`, 'error');
-      return;
-    }
+    try { const r = await api(`/api/track/${encodeURIComponent(slug)}`); t = r.track; }
+    catch (e) { toast(`load failed: ${e.message}`, 'error'); return; }
   }
   const isNew = !t;
   const html = `
-    <div class="form-row"><label>Slug</label><input id="tf-slug" ${isNew ? '' : 'readonly'} value="${escapeHtml(t?.slug || '')}" placeholder="kebab-case"></div>
-    <div class="form-row"><label>Title</label><input id="tf-title" value="${escapeHtml(t?.fm?.title || '')}" placeholder="human title"></div>
-    ${!isNew ? `<div class="form-row"><label>Status</label><select id="tf-status"><option value="active" ${t.fm?.status !== 'archived' ? 'selected' : ''}>active</option><option value="archived" ${t.fm?.status === 'archived' ? 'selected' : ''}>archived</option></select></div>` : ''}
-    <div class="form-row form-row-top"><label>Body (markdown)</label><textarea id="tf-body" rows="14" placeholder="## Цель\n...\n\n## Scope\n- ...\n\n## Заметки">${escapeHtml(t?.body || '')}</textarea></div>
+    <div class="form-row"><label>Slug</label><input class="input mono" id="tf-slug" ${isNew ? '' : 'readonly'} value="${escapeHtml(t?.slug || '')}" placeholder="kebab-case"></div>
+    <div class="form-row"><label>Title</label><input class="input" id="tf-title" value="${escapeHtml(t?.fm?.title || '')}" placeholder="human title"></div>
+    ${!isNew ? `<div class="form-row"><label>Status</label><select class="input" id="tf-status"><option value="active" ${t.fm?.status !== 'archived' ? 'selected' : ''}>active</option><option value="archived" ${t.fm?.status === 'archived' ? 'selected' : ''}>archived</option></select></div>` : ''}
+    <div class="form-row"><label>Body</label><textarea class="textarea mono" id="tf-body" placeholder="## Цель\n...\n\n## Scope\n- ...\n\n## Заметки">${escapeHtml(t?.body || '')}</textarea></div>
   `;
   openFormModal(isNew ? 'New track' : `Edit track · ${t.slug}`, html, async () => {
     const slug2 = (document.getElementById('tf-slug').value || '').trim().toLowerCase();
@@ -217,12 +221,12 @@ async function openTrackForm(slug) {
     const status = document.getElementById('tf-status')?.value;
     if (isNew) {
       await api('/api/tracks', { method: 'POST', body: JSON.stringify({ slug: slug2, title, body }) });
-      toast(`track ${slug2} created`);
+      toast(`track ${slug2} created`, 'success');
     } else {
       const patch = { title, body };
       if (status) patch.status = status;
       await api(`/api/track/${encodeURIComponent(slug)}`, { method: 'PATCH', body: JSON.stringify(patch) });
-      toast(`track ${slug} saved`);
+      toast(`track ${slug} saved`, 'success');
     }
     closeFormModal();
     await refresh();
@@ -230,15 +234,15 @@ async function openTrackForm(slug) {
 }
 
 async function archiveTrack(slug) {
-  if (!confirm(`Archive track "${slug}"? It moves to .workflow/archive/tracks/.`)) return;
+  if (!confirm(`Archive track "${slug}"? Moves to .workflow/archive/tracks/`)) return;
   try {
     const r = await api(`/api/track/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-    toast(`archived → ${r.archived_to}`);
+    toast(`archived → ${r.archived_to}`, 'success');
     await refresh();
   } catch (e) { toast(`archive failed: ${e.message}`, 'error'); }
 }
 
-// ---------- Iteration form ----------
+// ─── Iteration form ─────────────────────────────────────────────────────────
 
 async function openIterForm(trackSlug, iterId) {
   const isNew = !iterId;
@@ -253,18 +257,18 @@ async function openIterForm(trackSlug, iterId) {
   const defaultBody = `## Цель\n(одно-два предложения что итерация выдаёт на выходе)\n\n## Scope\nЧто входит:\n- ...\nЧто НЕ входит:\n- ...\n\n## Exit criteria\n- [ ] Все таски done\n- [ ] (конкретное наблюдаемое условие)\n\n## Заметки\n`;
 
   const html = `
-    <div class="form-row"><label>Track</label><input value="${escapeHtml(trackSlug)}" readonly></div>
-    <div class="form-row"><label>Slug</label><input id="if-slug" value="${escapeHtml(it?.slug || '')}" placeholder="kebab-case (e.g. tooltips-mvp)"></div>
-    <div class="form-row"><label>Title</label><input id="if-title" value="${escapeHtml(it?.fm?.title || it?.title || '')}" placeholder="human title"></div>
+    <div class="form-row"><label>Track</label><input class="input mono" value="${escapeHtml(trackSlug)}" readonly></div>
+    <div class="form-row"><label>Slug</label><input class="input mono" id="if-slug" value="${escapeHtml(it?.slug || '')}" placeholder="kebab-case"></div>
+    <div class="form-row"><label>Title</label><input class="input" id="if-title" value="${escapeHtml(it?.fm?.title || it?.title || '')}" placeholder="human title"></div>
     <div class="form-row"><label>Status</label>
-      <select id="if-status">
+      <select class="input" id="if-status">
         <option value="planned"   ${(!it || it.status === 'planned') ? 'selected' : ''}>planned</option>
         <option value="active"    ${it?.status === 'active' ? 'selected' : ''}>active</option>
         <option value="done"      ${it?.status === 'done' ? 'selected' : ''}>done</option>
         <option value="abandoned" ${it?.status === 'abandoned' ? 'selected' : ''}>abandoned</option>
       </select>
     </div>
-    <div class="form-row form-row-top"><label>README markdown</label><textarea id="if-body" rows="18">${escapeHtml(it?.body || defaultBody)}</textarea></div>
+    <div class="form-row"><label>README</label><textarea class="textarea mono" id="if-body">${escapeHtml(it?.body || defaultBody)}</textarea></div>
   `;
   openFormModal(isNew ? `New iteration · ${trackSlug}` : `Edit iter ${iterId} · ${trackSlug}`, html, async () => {
     const slug2 = (document.getElementById('if-slug').value || '').trim().toLowerCase();
@@ -276,7 +280,7 @@ async function openIterForm(trackSlug, iterId) {
         method: 'POST',
         body: JSON.stringify({ slug: slug2, title, status, body }),
       });
-      toast(`iter ${slug2} created`);
+      toast(`iter ${slug2} created`, 'success');
     } else {
       const patch = { title, status, body };
       if (slug2 !== it.slug) patch.slug = slug2;
@@ -284,7 +288,7 @@ async function openIterForm(trackSlug, iterId) {
         method: 'PATCH',
         body: JSON.stringify(patch),
       });
-      toast(`iter ${iterId} saved`);
+      toast(`iter ${iterId} saved`, 'success');
     }
     closeFormModal();
     await refresh();
@@ -294,7 +298,7 @@ async function openIterForm(trackSlug, iterId) {
 async function activateIter(track, id) {
   try {
     await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-    toast(`iter ${id} activated in ${track}`);
+    toast(`iter ${id} activated in ${track}`, 'success');
     await refresh();
   } catch (e) { toast(`activate failed: ${e.message}`, 'error'); }
 }
@@ -305,7 +309,7 @@ async function archiveIter(track, id) {
     await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/archive`, {
       method: 'POST', body: JSON.stringify({ status: 'done' }),
     });
-    toast(`iter ${id} closed`);
+    toast(`iter ${id} closed`, 'success');
     await refresh();
   } catch (e) { toast(`archive failed: ${e.message}`, 'error'); }
 }
@@ -314,13 +318,12 @@ async function deleteIter(track, id) {
   if (!confirm(`Delete planned iter ${id}? (only allowed for empty planned iterations)`)) return;
   try {
     await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    toast(`iter ${id} deleted`);
+    toast(`iter ${id} deleted`, 'success');
     await refresh();
   } catch (e) { toast(`delete failed: ${e.message}`, 'error'); }
 }
 
 async function reorderIters(track, fromId, toId) {
-  // Move fromId to toId's position. Build new order from current list.
   const tr = (STATE.tracks.tracks || []).find(t => t.slug === track);
   if (!tr) return;
   const ids = (tr.iterations || []).map(it => it.id);
@@ -333,12 +336,12 @@ async function reorderIters(track, fromId, toId) {
     await api(`/api/track/${encodeURIComponent(track)}/iterations/reorder`, {
       method: 'POST', body: JSON.stringify({ order: ids }),
     });
-    toast('reordered');
+    toast('reordered', 'success');
     await refresh();
   } catch (e) { toast(`reorder failed: ${e.message}`, 'error'); }
 }
 
-// ---------- Generic form modal ----------
+// ─── Generic form modal ─────────────────────────────────────────────────────
 
 let FORM_SUBMIT = null;
 
@@ -365,9 +368,6 @@ function bindFormModal() {
   document.getElementById('form-save').addEventListener('click', submitFormModal);
   document.getElementById('form-bg').addEventListener('click', e => {
     if (e.target.id === 'form-bg') closeFormModal();
-  });
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && document.getElementById('form-bg').classList.contains('open')) closeFormModal();
   });
 }
 
