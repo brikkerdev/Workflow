@@ -7,7 +7,8 @@ function renderAgents() {
   const page = document.createElement('div');
   page.className = 'agents-page';
 
-  const agents = STATE.board.agents || [];
+  const allAgents = STATE.board.agents || [];
+  const agents = STATE.search ? allAgents.filter(a => matchSearch(a)) : allAgents;
   const header = document.createElement('div');
   header.className = 'tracks-header';
   header.innerHTML = `

@@ -110,6 +110,32 @@ function bindChrome() {
     STATE.boardTrack = sel.value || null;
     refresh();
   });
+  bindSearch();
+}
+
+function rerenderActiveView() {
+  if (STATE.currentTab === 'tracks') renderTracks();
+  else if (STATE.currentTab === 'agents') renderAgents();
+  else renderBoard();
+}
+
+let SEARCH_TIMER = null;
+function bindSearch() {
+  const input = document.getElementById('search-input');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    STATE.search = input.value || '';
+    clearTimeout(SEARCH_TIMER);
+    SEARCH_TIMER = setTimeout(rerenderActiveView, 80);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      input.value = '';
+      STATE.search = '';
+      input.blur();
+      rerenderActiveView();
+    }
+  });
 }
 
 function populateBoardTrackPicker() {

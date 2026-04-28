@@ -9,7 +9,17 @@ function renderTracks() {
   const page = document.createElement('div');
   page.className = 'tracks-page';
 
-  const tracks = STATE.tracks.tracks || [];
+  const allTracks = STATE.tracks.tracks || [];
+  const tracks = STATE.search
+    ? allTracks.filter(tr => {
+        if (matchSearch(tr.slug, tr.fm?.title, tr.body)) return true;
+        return (tr.iterations || []).some(it => matchSearch(it.id, it.slug, it.title, it.fm?.title));
+      })
+    : allTracks;
+  if (STATE.search) {
+    // auto-expand matching tracks during search
+    for (const t of tracks) STATE.expandedTracks.add(t.slug);
+  }
 
   // header
   const header = document.createElement('div');

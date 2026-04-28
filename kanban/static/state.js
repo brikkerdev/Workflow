@@ -28,7 +28,14 @@ const STATE = {
   currentTab: 'iteration',
   boardTrack: null,
   expandedTracks: new Set(),
+  search: '',
 };
+
+function matchSearch(...fields) {
+  const q = (STATE.search || '').trim().toLowerCase();
+  if (!q) return true;
+  return fields.some(f => String(f ?? '').toLowerCase().includes(q));
+}
 
 function rebuildIndex() {
   STATE.taskIndex = {};
@@ -54,3 +61,4 @@ window.STATE = STATE;
 window.rebuildIndex = rebuildIndex;
 window.allTasks = allTasks;
 window.depStatus = depStatus;
+window.matchSearch = matchSearch;

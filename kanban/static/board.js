@@ -280,9 +280,20 @@ function renderBoard() {
   if (iter) view.appendChild(buildBoardHeader(iter));
   else view.appendChild(buildAggregateHeader(actives));
 
+  const all = STATE.board.tasks || [];
+  const filtered = all.filter(t => matchSearch(t.id, t.title, t.assignee, t.track, (t.deps || []).join(' ')));
+
   const board = document.createElement('div');
-  buildKanbanInto(board, STATE.board.tasks || [], { showTrackBadge: !STATE.boardTrack });
+  buildKanbanInto(board, filtered, { showTrackBadge: !STATE.boardTrack });
   view.appendChild(board);
+
+  if (STATE.search && filtered.length === 0) {
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.padding = '40px';
+    note.innerHTML = `no matches for <b>${escapeHtml(STATE.search)}</b>`;
+    view.appendChild(note);
+  }
 }
 
 window.renderCard = renderCard;
