@@ -141,6 +141,6 @@ For placeholder icons (where it matters that they are visible immediately after 
 When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
 1. Read the task file fully — Goal, Context links, Acceptance criteria, How to verify.
 2. Build/edit UI per Acceptance criteria. Always validate visually via Scene-view screenshot in prefab stage.
-3. Append a report to the **Notes** section of the task file via Edit: which prefabs/components touched, screenshots taken, missing-asset list if any.
+3. Append to **Notes** ONLY if something non-obvious came up (missing asset, hierarchy constraint, anchoring caveat). Skip routine "I touched these prefabs" recaps.
 4. Update the task `status` frontmatter to `review`.
 5. Tell the user the task is ready for verification per its `How to verify` block.

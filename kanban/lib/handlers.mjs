@@ -684,7 +684,9 @@ export async function handleVerify(req, res, tid) {
   }
 
   // approve: write note, then run commit+push in background.
-  const block = buildApproveBlock(fm.attempts || 0, summary);
+  // Attempt N = the N-th verification round (always = past rejects + 1),
+  // matching the UI header and the reject-block numbering.
+  const block = buildApproveBlock((fm.attempts || 0) + 1, summary);
   const newBody = appendToSection(body, 'Notes', block);
   saveTask(p, fm, newBody);
 

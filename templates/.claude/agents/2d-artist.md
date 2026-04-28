@@ -68,6 +68,6 @@ HASHKILL's style is monochrome minimalism with a hacker-terminal soul. Every ass
 When dispatched on a task from `.workflow/iterations/<iter>/tasks/<id>.md`:
 1. Read the task file fully — Goal, Context links, Acceptance criteria, How to verify.
 2. Execute per Acceptance criteria within your domain.
-3. Append a report to the **Notes** section of the task file via Edit: what was produced, file paths, any blockers.
+3. Append to **Notes** ONLY if something non-obvious came up (missing asset, constraint, blocker). Skip routine "I produced X" recaps.
 4. Update the task `status` frontmatter to `review`.
 5. Tell the user the task is ready for verification per its `How to verify` block.
