@@ -13,6 +13,7 @@ import {
   handleTrackCreate, handleTrackUpdate, handleTrackDelete,
   handleIterCreate, handleIterUpdate, handleIterActivate, handleIterArchive, handleIterDelete, handleIterReorder,
   handleTaskCreate, handleTaskDelete,
+  handleAgentsList, handleAgent, handleAgentCreate, handleAgentUpdate, handleAgentDelete,
   handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
@@ -37,8 +38,11 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/tracks') return handleTracks(res);
       if (p === '/api/queue') return handleQueueStatus(res);
       if (p === '/api/project') return handleProject(res);
+      if (p === '/api/agents') return handleAgentsList(res);
 
       let m;
+      m = /^\/api\/agent\/([^/]+)$/.exec(p);
+      if (m) return handleAgent(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrack(res, decodeURIComponent(m[1]));
 
@@ -64,6 +68,9 @@ const server = http.createServer(async (req, res) => {
       // tracks
       if (p === '/api/tracks') return handleTrackCreate(req, res);
 
+      // agents
+      if (p === '/api/agents') return handleAgentCreate(req, res);
+
       // iterations under a track
       m = /^\/api\/track\/([^/]+)\/iterations$/.exec(p);
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
@@ -85,6 +92,8 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleTrackUpdate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)$/.exec(p);
       if (m) return handleIterUpdate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      m = /^\/api\/agent\/([^/]+)$/.exec(p);
+      if (m) return handleAgentUpdate(req, res, decodeURIComponent(m[1]));
       if (p.startsWith('/api/task/')) return handlePatch(req, res, decodeURIComponent(p.split('/').pop()));
     } else if (req.method === 'DELETE') {
       let m = /^\/api\/track\/([^/]+)$/.exec(p);
@@ -99,6 +108,8 @@ const server = http.createServer(async (req, res) => {
       if (att && att.name) return handleDeleteAttachment(res, att.tid, att.name);
       m = /^\/api\/task\/([^/]+)$/.exec(p);
       if (m) return handleTaskDelete(res, decodeURIComponent(m[1]));
+      m = /^\/api\/agent\/([^/]+)$/.exec(p);
+      if (m) return handleAgentDelete(res, decodeURIComponent(m[1]));
     }
     return sendJson(res, 404, { error: 'not found' });
   } catch (e) {

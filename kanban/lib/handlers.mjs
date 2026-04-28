@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
   VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
-  ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR,
+  ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR, AGENTS_DIR,
   trackDir, trackActiveFile, trackItersDir, iterDirFor,
 } from './config.mjs';
 import {
@@ -469,6 +469,80 @@ export async function handlePatch(req, res, tid) {
   saveTask(p, fm, nextBody);
   fm._path = rel(p);
   sendJson(res, 200, fm);
+}
+
+// ─── Agents ───────────────────────────────────────────────────────────────
+
+function agentPath(slug) { return path.join(AGENTS_DIR, `${slug}.md`); }
+
+function readAgent(slug) {
+  const p = agentPath(slug);
+  if (!exists(p)) return null;
+  const text = readText(p);
+  const [fm, body] = parseTask(text);
+  return { slug, fm: fm || {}, body: body || '', path: rel(p) };
+}
+
+// GET /api/agents — list with frontmatter
+export function handleAgentsList(res) {
+  const out = [];
+  for (const slug of listAgents()) {
+    const a = readAgent(slug);
+    if (a) out.push({ slug: a.slug, description: a.fm.description || '', model: a.fm.model || '', tools: a.fm.tools || '', body: a.body });
+  }
+  sendJson(res, 200, { agents: out });
+}
+
+// GET /api/agent/:slug
+export function handleAgent(res, slug) {
+  const a = readAgent(slug);
+  if (!a) return sendJson(res, 404, { error: 'agent not found' });
+  sendJson(res, 200, a);
+}
+
+// POST /api/agents  body: { slug, description?, model?, tools?, body? }
+export async function handleAgentCreate(req, res) {
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const slug = String(p.slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) return sendJson(res, 400, { error: 'slug must be kebab-case' });
+  const target = agentPath(slug);
+  if (exists(target)) return sendJson(res, 409, { error: `agent exists: ${slug}` });
+  fs.mkdirSync(AGENTS_DIR, { recursive: true });
+  const fm = {
+    name: slug,
+    description: String(p.description || '').trim(),
+    model: String(p.model || 'inherit').trim(),
+  };
+  if (p.tools != null) fm.tools = String(p.tools);
+  const body = String(p.body || `# ${slug}\n\n(role description)\n`);
+  fs.writeFileSync(target, serializeTask(fm, body), 'utf-8');
+  sendJson(res, 200, { ok: true, slug });
+}
+
+// PATCH /api/agent/:slug  body: { description?, model?, tools?, body? }
+export async function handleAgentUpdate(req, res, slug) {
+  const a = readAgent(slug);
+  if (!a) return sendJson(res, 404, { error: 'agent not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const fm = { ...a.fm };
+  if ('description' in p) fm.description = String(p.description || '');
+  if ('model' in p)       fm.model       = String(p.model || '');
+  if ('tools' in p) {
+    if (p.tools == null || p.tools === '') delete fm.tools;
+    else fm.tools = String(p.tools);
+  }
+  const body = 'body' in p ? String(p.body || '') : a.body;
+  fs.writeFileSync(agentPath(slug), serializeTask(fm, body), 'utf-8');
+  sendJson(res, 200, { ok: true });
+}
+
+// DELETE /api/agent/:slug — remove the agent file (refuses if any task uses it)
+export function handleAgentDelete(res, slug) {
+  if (!exists(agentPath(slug))) return sendJson(res, 404, { error: 'agent not found' });
+  const inUse = listAllTasks().filter(t => t.assignee === slug).map(t => t.id);
+  if (inUse.length) return sendJson(res, 409, { error: `agent assigned to: ${inUse.slice(0, 5).join(', ')}${inUse.length > 5 ? ' …' : ''}` });
+  fs.rmSync(agentPath(slug), { force: true });
+  sendJson(res, 200, { ok: true });
 }
 
 // DELETE /api/task/:id — remove the task file. Refuses if there are dependents.
