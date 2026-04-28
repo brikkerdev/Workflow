@@ -1,16 +1,17 @@
 ---
-description: "Показать статус активной итерации: список тасков с assignee/status/deps. Группировать по статусу."
-allowed-tools: Read, Glob, Grep, Bash
+description: "Показать активные итерации (опционально по треку): таски сгруппированы по статусу."
+allowed-tools: Read, Bash
+argument-hint: "[track-slug]"
 ---
 
-Покажи статус активной итерации.
+Покажи статус активных итераций: $ARGUMENTS.
 
 Шаги:
-1. Прочитай `.workflow/ACTIVE`. Если файл пуст — скажи "Нет активной итерации. Запусти /new-iter чтобы создать." и закончи.
-2. Найди папку `.workflow/iterations/<id>-*/` где `<id>` совпадает с содержимым ACTIVE.
-3. Прочитай `README.md` итерации — выведи строку с её title и целью (1-2 строки).
-4. Прочитай все `tasks/T*.md` файлы итерации. Для каждого извлеки frontmatter (`id`, `title`, `assignee`, `status`, `deps`, `estimate`).
-5. Сгруппируй и выведи компактной таблицей или списком, по статусу в порядке: `in-progress` → `review` → `todo` → `blocked` → `done`. Для каждого таска: `T### · status · assignee · estimate · title` + `deps: [...]` если не пусто.
-6. В конце короткая сводка: сколько в каком статусе, есть ли ready-to-dispatch таски (`todo` с закрытыми deps).
+1. Если `$ARGUMENTS` задан — `curl http://127.0.0.1:7777/api/board?track=<slug>`. Иначе — `curl http://127.0.0.1:7777/api/board` (агрегат по всем активным).
+2. Для каждой активной итерации выведи:
+   - `<track> · iter <id> · <iter title>` (одна строка)
+   - таски сгруппированы по статусу в порядке: `in-progress` → `verifying` → `queued` → `todo` → `blocked` → `done`
+   - каждая строка: `T### · status · assignee · estimate · title` + `deps: [...]` если непусто
+3. В конце сводка: total + ready-to-dispatch (todo с закрытыми deps).
 
-Не редактируй ничего. Только чтение.
+Не редактируй ничего.

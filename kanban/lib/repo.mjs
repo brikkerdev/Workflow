@@ -1,39 +1,131 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  ROOT, WORKFLOW, TRACKS_DIR, ITERATIONS_DIR, AGENTS_DIR,
+  ROOT, WORKFLOW, TRACKS_DIR, AGENTS_DIR,
+  trackDir, trackActiveFile, trackItersDir,
 } from './config.mjs';
 import { parseTask, serializeTask, extractSection, parseChecklist } from './frontmatter.mjs';
 
 export function exists(p) {
   try { fs.accessSync(p); return true; } catch { return false; }
 }
-
 export function readText(p) { return fs.readFileSync(p, 'utf-8'); }
-
 export function rel(p) { return path.relative(ROOT, p).replace(/\\/g, '/'); }
 
-export function activeIter() {
-  const f = path.join(WORKFLOW, 'ACTIVE');
+// ---------- Tracks ----------
+
+export function listTrackSlugs() {
+  if (!exists(TRACKS_DIR)) return [];
+  return fs.readdirSync(TRACKS_DIR)
+    .filter(n => fs.statSync(path.join(TRACKS_DIR, n)).isDirectory())
+    .sort();
+}
+
+export function readTrack(slug) {
+  const d = trackDir(slug);
+  if (!exists(d)) return null;
+  const readme = path.join(d, 'README.md');
+  let fm = {}, body = '';
+  if (exists(readme)) [fm, body] = parseTask(readText(readme));
+  return { slug, fm: fm || {}, body, dir: d };
+}
+
+export function writeTrackReadme(slug, fm, body) {
+  const d = trackDir(slug);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'README.md'), serializeTask(fm, body), 'utf-8');
+}
+
+export function trackActive(slug) {
+  const f = trackActiveFile(slug);
   if (!exists(f)) return null;
   return readText(f).trim() || null;
 }
 
-export function iterDir(iterId) {
-  if (!iterId || !exists(ITERATIONS_DIR)) return null;
-  const found = fs.readdirSync(ITERATIONS_DIR).find(n => n.startsWith(`${iterId}-`));
-  return found ? path.join(ITERATIONS_DIR, found) : null;
+export function setTrackActive(slug, iterId) {
+  const f = trackActiveFile(slug);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, iterId ? String(iterId) : '', 'utf-8');
 }
 
-// Read iteration README frontmatter to find which track it belongs to.
-export function iterTrack(iterId) {
-  const d = iterDir(iterId);
-  if (!d) return null;
-  const readme = path.join(d, 'README.md');
-  if (!exists(readme)) return null;
-  const [fm] = parseTask(readText(readme));
-  return fm?.track || null;
+// ---------- Iterations ----------
+
+export function listIterations(slug) {
+  const d = trackItersDir(slug);
+  if (!exists(d)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(d).sort()) {
+    const full = path.join(d, name);
+    if (!fs.statSync(full).isDirectory()) continue;
+    const m = /^(\d{3})-(.+)$/.exec(name);
+    if (!m) continue;
+    const iterId = m[1], iterSlug = m[2];
+    const readmePath = path.join(full, 'README.md');
+    let fm = {}, body = '';
+    if (exists(readmePath)) [fm, body] = parseTask(readText(readmePath));
+    fm = fm || {};
+    out.push({
+      id: iterId,
+      slug: iterSlug,
+      track: slug,
+      dir: full,
+      fm,
+      body,
+      status: fm.status || 'planned',
+      title: fm.title || '',
+    });
+  }
+  return out;
 }
+
+export function findIteration(slug, iterId) {
+  return listIterations(slug).find(it => it.id === iterId) || null;
+}
+
+export function writeIterationReadme(trackSlug, iterId, iterSlug, fm, body) {
+  const d = path.join(trackItersDir(trackSlug), `${iterId}-${iterSlug}`);
+  fs.mkdirSync(path.join(d, 'tasks'), { recursive: true });
+  fs.writeFileSync(path.join(d, 'README.md'), serializeTask(fm, body), 'utf-8');
+}
+
+// All currently-active iterations across all tracks: [{ track, id, slug, ... }]
+export function activeIterations() {
+  const out = [];
+  for (const slug of listTrackSlugs()) {
+    const aid = trackActive(slug);
+    if (!aid) continue;
+    const iter = findIteration(slug, aid);
+    if (iter) out.push(iter);
+  }
+  return out;
+}
+
+// Highest task id used anywhere in the project (T###).
+export function highestTaskId() {
+  let max = 0;
+  for (const slug of listTrackSlugs()) {
+    for (const iter of listIterations(slug)) {
+      const td = path.join(iter.dir, 'tasks');
+      if (!exists(td)) continue;
+      for (const n of fs.readdirSync(td)) {
+        const m = /^T(\d{3,})-/.exec(n);
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+      }
+    }
+  }
+  return max;
+}
+
+// Highest iteration id within a track.
+export function highestIterId(trackSlug) {
+  let max = 0;
+  for (const it of listIterations(trackSlug)) {
+    max = Math.max(max, parseInt(it.id, 10));
+  }
+  return max;
+}
+
+// ---------- Tasks ----------
 
 function readTasksIn(tasksDir, source) {
   const out = [];
@@ -60,28 +152,19 @@ function readTasksIn(tasksDir, source) {
   return out;
 }
 
-export function listTasks(iterId) {
-  const d = iterDir(iterId);
-  if (!d) return [];
-  return readTasksIn(path.join(d, 'tasks'), `iter:${iterId}`);
-}
-
-export function listTrackSlugs() {
-  if (!exists(TRACKS_DIR)) return [];
-  return fs.readdirSync(TRACKS_DIR)
-    .filter(n => fs.statSync(path.join(TRACKS_DIR, n)).isDirectory())
-    .sort();
-}
-
-export function listTrackTasks(slug) {
-  return readTasksIn(path.join(TRACKS_DIR, slug, 'tasks'), `track:${slug}`);
+export function listTasksInIteration(trackSlug, iterId) {
+  const iter = findIteration(trackSlug, iterId);
+  if (!iter) return [];
+  return readTasksIn(path.join(iter.dir, 'tasks'), `track:${trackSlug}/iter:${iterId}`);
 }
 
 export function listAllTasks() {
   const out = [];
-  const iter = activeIter();
-  if (iter) out.push(...listTasks(iter));
-  for (const slug of listTrackSlugs()) out.push(...listTrackTasks(slug));
+  for (const slug of listTrackSlugs()) {
+    for (const iter of listIterations(slug)) {
+      out.push(...readTasksIn(path.join(iter.dir, 'tasks'), `track:${slug}/iter:${iter.id}`));
+    }
+  }
   return out;
 }
 
@@ -95,15 +178,15 @@ export function listAgents() {
 
 export function findTask(taskId) {
   const candidates = [];
-  const collect = (dir) => {
-    if (!exists(dir)) return;
-    for (const n of fs.readdirSync(dir)) {
-      if (n.startsWith(`${taskId}-`) && n.endsWith('.md')) candidates.push(path.join(dir, n));
+  for (const slug of listTrackSlugs()) {
+    for (const iter of listIterations(slug)) {
+      const td = path.join(iter.dir, 'tasks');
+      if (!exists(td)) continue;
+      for (const n of fs.readdirSync(td)) {
+        if (n.startsWith(`${taskId}-`) && n.endsWith('.md')) candidates.push(path.join(td, n));
+      }
     }
-  };
-  const d = iterDir(activeIter());
-  if (d) collect(path.join(d, 'tasks'));
-  for (const slug of listTrackSlugs()) collect(path.join(TRACKS_DIR, slug, 'tasks'));
+  }
   if (!candidates.length) return [null, null, null];
   const p = candidates[0];
   const [fm, body] = parseTask(readText(p));

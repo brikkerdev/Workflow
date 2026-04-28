@@ -19,6 +19,7 @@
       <span id="iter-name">loading…</span>
       <span class="chev" id="icon-chev"></span>
     </button>
+    <select id="board-track" class="track-picker" title="filter board by track"></select>
   </div>
   <div class="topbar-right">
     <div class="search-stub">
@@ -90,6 +91,20 @@
       <button id="m-dispatch" class="primary">▶ Start</button>
       <button id="m-save">Save</button>
       <button id="m-cancel">Close</button>
+    </footer>
+  </div>
+</div>
+
+<div class="modal-bg form-bg" id="form-bg">
+  <div class="modal form-modal" role="dialog" aria-modal="true">
+    <header>
+      <span class="title" id="form-title"></span>
+      <button class="close" id="form-cancel" aria-label="close">×</button>
+    </header>
+    <div class="body" id="form-body"></div>
+    <footer>
+      <button id="form-save" class="primary">Save</button>
+      <button id="form-cancel-2" onclick="closeFormModal()">Cancel</button>
     </footer>
   </div>
 </div>

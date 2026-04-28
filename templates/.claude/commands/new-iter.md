@@ -1,21 +1,41 @@
 ---
-description: "Создать новую итерацию (всегда привязана к треку) и сделать её активной."
-allowed-tools: Read, Glob, Write, Edit, Bash, AskUserQuestion
+description: "Создать одну итерацию внутри трека. Аргумент — slug трека (опционально)."
+allowed-tools: Read, Bash, AskUserQuestion
+argument-hint: "<track-slug>"
 ---
 
-Создай новую итерацию.
+Создай новую итерацию: $ARGUMENTS.
 
 Шаги:
-1. Прочитай `.workflow/ACTIVE`. Если **не пусто** — спроси через AskUserQuestion: завершить текущую (move в `archive/`, очистить ACTIVE) или прервать. Без явного подтверждения не создавай новую.
-2. Просканируй `.workflow/tracks/`. Если треков нет — стоп, скажи "сначала создай трек через /new-track". Итерация всегда живёт внутри трека.
-3. Спроси у пользователя через AskUserQuestion:
-   - **track** (slug одного из существующих треков из шага 2)
+1. Если `$ARGUMENTS` пустой — через `curl http://127.0.0.1:7777/api/tracks` получи список треков, спроси через AskUserQuestion какой выбрать.
+2. Через AskUserQuestion спроси:
    - **slug** итерации (kebab-case, например `tooltips-mvp`)
-   - **цель итерации** (1-2 предложения)
-4. Просканируй `.workflow/iterations/` и найди наибольший id. Новый id = max + 1, формат `###`.
-5. Создай папку `.workflow/iterations/<id>-<slug>/`.
-6. Прочитай `.workflow/templates/iteration.md`. Подставь `id`, `slug`, `track`, `started: <today>`, цель.
-7. Запиши `README.md` итерации через Write.
-8. Создай пустую `tasks/` внутри итерации.
-9. Запиши id в `.workflow/ACTIVE`.
-10. Сообщи: итерация создана внутри трека `<track>`, активна, добавляй таски через `/new-task`.
+   - **title** (короткое название)
+   - **цель** (что итерация должна выдать на выходе, 1-2 предложения)
+   - **scope** (список 3-7 пунктов что входит)
+   - **status** (planned по умолчанию; activate сразу — ответь `active`)
+3. Собери body:
+   ```
+   ## Цель
+   <цель>
+
+   ## Scope
+   <scope как bullet list>
+
+   ## Exit criteria
+   - [ ] Все таски done
+   - [ ] (заполни конкретные условия)
+
+   ## Заметки
+   ```
+4. POST на API:
+   ```
+   curl -s -X POST http://127.0.0.1:7777/api/track/<track>/iterations \
+     -H 'content-type: application/json' \
+     -d '{"slug":"<slug>","title":"<title>","status":"<status>","body":"<body>"}'
+   ```
+5. Если status был `active` — а в треке уже была активная итерация — она автоматически НЕ переключится. Если хочешь активировать — отдельным вызовом:
+   ```
+   curl -s -X POST http://127.0.0.1:7777/api/track/<track>/iteration/<id>/activate
+   ```
+6. Сообщи: итерация создана, id, добавляй таски через `/new-task` или прямо в kanban UI.

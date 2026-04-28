@@ -1,13 +1,20 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { VALID_STATUSES, ALLOWED_TRANSITIONS, transitionsJson, ROOT, WORKFLOW, TRACKS_DIR } from './config.mjs';
+import {
+  VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
+  ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR,
+  trackDir, trackActiveFile, trackItersDir, iterDirFor,
+} from './config.mjs';
 import {
   exists, readText, rel,
-  activeIter, iterDir, iterTrack, listTasks, listTrackSlugs, listTrackTasks,
+  listTrackSlugs, readTrack, writeTrackReadme, trackActive, setTrackActive,
+  listIterations, findIteration, writeIterationReadme,
+  activeIterations, highestTaskId, highestIterId,
+  listTasksInIteration, listAllTasks,
   listAgents, findTask, saveTask, depsSatisfied,
 } from './repo.mjs';
-import { parseTask, replaceSection, appendToSection, parseChecklist } from './frontmatter.mjs';
+import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist } from './frontmatter.mjs';
 import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
 import { sendJson, readBody } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
@@ -25,42 +32,307 @@ export function handleProject(res) {
   sendJson(res, 200, { name: projectName(), root: ROOT });
 }
 
-export function handleBoard(res) {
-  const iter = activeIter();
-  if (!iter) {
-    return sendJson(res, 200, {
-      iteration: null, tasks: [], agents: listAgents(),
-      queue_size: queueCount(), valid_statuses: VALID_STATUSES,
-      transitions: transitionsJson(),
-    });
-  }
-  const d = iterDir(iter);
-  let readme = '';
-  if (d && exists(path.join(d, 'README.md'))) readme = readText(path.join(d, 'README.md'));
-  return sendJson(res, 200, {
-    iteration: { id: iter, dir: d ? rel(d) : null, readme, track: iterTrack(iter) },
-    tasks: listTasks(iter),
+// Common envelope: lists agents/queue/transitions so frontend keeps
+// a single source of truth.
+function envelope(extra = {}) {
+  return {
     agents: listAgents(),
     queue_size: queueCount(),
     valid_statuses: VALID_STATUSES,
+    iter_statuses: ITER_STATUSES,
     transitions: transitionsJson(),
     track_count: listTrackSlugs().length,
-  });
+    ...extra,
+  };
 }
 
+// GET /api/board[?track=<slug>]
+// - track param: returns kanban for that track's active iteration
+// - no param: aggregate kanban across all currently-active iterations
+export function handleBoard(res, query = {}) {
+  const want = query.track || null;
+  if (want) {
+    const t = readTrack(want);
+    if (!t) return sendJson(res, 404, { error: `track not found: ${want}` });
+    const aid = trackActive(want);
+    if (!aid) return sendJson(res, 200, envelope({
+      iteration: null, track: { slug: want, fm: t.fm, body: t.body },
+      tasks: [],
+    }));
+    const iter = findIteration(want, aid);
+    return sendJson(res, 200, envelope({
+      iteration: iter ? {
+        id: iter.id, slug: iter.slug, dir: rel(iter.dir),
+        readme: iter.body, fm: iter.fm, track: want, status: iter.status,
+      } : null,
+      track: { slug: want, fm: t.fm, body: t.body },
+      tasks: iter ? listTasksInIteration(want, aid) : [],
+    }));
+  }
+  // aggregate across active iterations
+  const actives = activeIterations();
+  const tasks = [];
+  for (const iter of actives) tasks.push(...listTasksInIteration(iter.track, iter.id));
+  return sendJson(res, 200, envelope({
+    iteration: null,
+    actives: actives.map(it => ({ track: it.track, id: it.id, slug: it.slug, status: it.status })),
+    tasks,
+  }));
+}
+
+// GET /api/tracks  — list of tracks with summary timeline
 export function handleTracks(res) {
   const out = [];
   for (const slug of listTrackSlugs()) {
-    const d = path.join(TRACKS_DIR, slug);
-    let readme = '';
-    if (exists(path.join(d, 'README.md'))) readme = readText(path.join(d, 'README.md'));
-    out.push({ slug, dir: rel(d), readme, tasks: listTrackTasks(slug) });
+    const t = readTrack(slug);
+    if (!t) continue;
+    const iters = listIterations(slug).map(it => ({
+      id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
+      task_count: listTasksInIteration(slug, it.id).length,
+    }));
+    out.push({
+      slug, fm: t.fm, body: t.body, dir: rel(t.dir),
+      active: trackActive(slug),
+      iterations: iters,
+    });
   }
-  sendJson(res, 200, {
-    tracks: out, agents: listAgents(),
-    queue_size: queueCount(), valid_statuses: VALID_STATUSES,
-    transitions: transitionsJson(),
-  });
+  sendJson(res, 200, envelope({ tracks: out }));
+}
+
+// GET /api/track/:slug — single track full view
+export function handleTrack(res, slug) {
+  const t = readTrack(slug);
+  if (!t) return sendJson(res, 404, { error: 'track not found' });
+  const iters = listIterations(slug).map(it => ({
+    id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
+    fm: it.fm, body: it.body,
+    task_count: listTasksInIteration(slug, it.id).length,
+  }));
+  sendJson(res, 200, envelope({
+    track: { slug, fm: t.fm, body: t.body, dir: rel(t.dir) },
+    active: trackActive(slug),
+    iterations: iters,
+  }));
+}
+
+// POST /api/tracks  body: { slug, title, body }
+export async function handleTrackCreate(req, res) {
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const slug = String(p.slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) return sendJson(res, 400, { error: 'slug must be kebab-case alnum' });
+  if (exists(trackDir(slug))) return sendJson(res, 409, { error: `track exists: ${slug}` });
+  const fm = {
+    slug,
+    title: String(p.title || '').trim() || slug,
+    status: 'active',
+    started: new Date().toISOString().slice(0, 10),
+  };
+  const body = '\n# Track ' + (fm.title || slug) + '\n\n' + (p.body || '## Цель\n\n## Scope\n\n## Заметки\n');
+  writeTrackReadme(slug, fm, body);
+  fs.mkdirSync(trackItersDir(slug), { recursive: true });
+  sendJson(res, 200, { ok: true, slug });
+}
+
+// PATCH /api/track/:slug  body: { title?, body?, status? }
+export async function handleTrackUpdate(req, res, slug) {
+  const t = readTrack(slug);
+  if (!t) return sendJson(res, 404, { error: 'track not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const fm = { ...t.fm };
+  if ('title' in p) fm.title = String(p.title || '');
+  if ('status' in p) {
+    if (!['active', 'archived'].includes(p.status)) return sendJson(res, 400, { error: 'status: active|archived' });
+    fm.status = p.status;
+  }
+  const newBody = 'body' in p ? String(p.body || '') : t.body;
+  writeTrackReadme(slug, fm, newBody);
+  sendJson(res, 200, { ok: true });
+}
+
+// DELETE /api/track/:slug — archive (move to .workflow/archive/tracks/<slug>-<ts>)
+export function handleTrackDelete(res, slug) {
+  const src = trackDir(slug);
+  if (!exists(src)) return sendJson(res, 404, { error: 'track not found' });
+  fs.mkdirSync(path.join(ARCHIVE_DIR, 'tracks'), { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dst = path.join(ARCHIVE_DIR, 'tracks', `${slug}-${ts}`);
+  fs.renameSync(src, dst);
+  sendJson(res, 200, { ok: true, archived_to: rel(dst) });
+}
+
+// POST /api/track/:slug/iterations  body: { slug, title, body?, status? }
+export async function handleIterCreate(req, res, trackSlug) {
+  const t = readTrack(trackSlug);
+  if (!t) return sendJson(res, 404, { error: 'track not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const iterSlug = String(p.slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(iterSlug)) return sendJson(res, 400, { error: 'iter slug must be kebab-case' });
+  const status = p.status || 'planned';
+  if (!ITER_STATUSES.includes(status)) return sendJson(res, 400, { error: `status: ${ITER_STATUSES.join('|')}` });
+  const id = String(highestIterId(trackSlug) + 1).padStart(3, '0');
+  const fm = {
+    id, slug: iterSlug, track: trackSlug, status,
+    title: String(p.title || '').trim() || iterSlug,
+    started: new Date().toISOString().slice(0, 10),
+  };
+  const body = String(p.body || '').trim()
+    ? '\n' + p.body
+    : `\n# Iteration ${id} — ${fm.title}\n\n## Цель\n(одно-два предложения)\n\n## Scope\nЧто входит:\n- ...\nЧто НЕ входит:\n- ...\n\n## Exit criteria\n- [ ] Все таски done\n- [ ] ...\n\n## Заметки\n`;
+  writeIterationReadme(trackSlug, id, iterSlug, fm, body);
+  sendJson(res, 200, { ok: true, id, slug: iterSlug });
+}
+
+// PATCH /api/track/:slug/iteration/:id   body: { title?, body?, status?, slug? }
+export async function handleIterUpdate(req, res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const fm = { ...it.fm };
+  if ('title' in p) fm.title = String(p.title || '');
+  if ('status' in p) {
+    if (!ITER_STATUSES.includes(p.status)) return sendJson(res, 400, { error: `status: ${ITER_STATUSES.join('|')}` });
+    fm.status = p.status;
+  }
+  let body = 'body' in p ? String(p.body || '') : it.body;
+
+  let newSlug = it.slug;
+  if ('slug' in p && p.slug && p.slug !== it.slug) {
+    newSlug = String(p.slug).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(newSlug)) return sendJson(res, 400, { error: 'iter slug must be kebab-case' });
+    fm.slug = newSlug;
+  }
+  if (newSlug !== it.slug) {
+    const newDir = iterDirFor(trackSlug, iterId, newSlug);
+    fs.renameSync(it.dir, newDir);
+  }
+  writeIterationReadme(trackSlug, iterId, newSlug, fm, body);
+  sendJson(res, 200, { ok: true });
+}
+
+// POST /api/track/:slug/iteration/:id/activate
+export function handleIterActivate(res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  // Set this iteration's status to active, demote any other active iter in same track to done.
+  for (const other of listIterations(trackSlug)) {
+    if (other.id === iterId) continue;
+    if (other.status === 'active') {
+      const fm2 = { ...other.fm, status: 'done' };
+      writeIterationReadme(trackSlug, other.id, other.slug, fm2, other.body);
+    }
+  }
+  const fm = { ...it.fm, status: 'active' };
+  writeIterationReadme(trackSlug, it.id, it.slug, fm, it.body);
+  setTrackActive(trackSlug, iterId);
+  sendJson(res, 200, { ok: true, active: iterId });
+}
+
+// POST /api/track/:slug/iteration/:id/archive  body: { status: 'done'|'abandoned' }
+export async function handleIterArchive(req, res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  let p = {}; try { p = await readBody(req); } catch {}
+  const status = p.status || 'done';
+  if (!['done', 'abandoned'].includes(status)) return sendJson(res, 400, { error: 'status: done|abandoned' });
+  const fm = { ...it.fm, status };
+  writeIterationReadme(trackSlug, it.id, it.slug, fm, it.body);
+  if (trackActive(trackSlug) === iterId) setTrackActive(trackSlug, '');
+  sendJson(res, 200, { ok: true });
+}
+
+// DELETE /api/track/:slug/iteration/:id — only allowed for planned (no tasks)
+export function handleIterDelete(res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  if (it.status !== 'planned') return sendJson(res, 409, { error: 'can delete only planned iterations' });
+  const tasks = listTasksInIteration(trackSlug, iterId);
+  if (tasks.length) return sendJson(res, 409, { error: `iteration has ${tasks.length} tasks; remove them first` });
+  fs.rmSync(it.dir, { recursive: true, force: true });
+  if (trackActive(trackSlug) === iterId) setTrackActive(trackSlug, '');
+  sendJson(res, 200, { ok: true });
+}
+
+// POST /api/track/:slug/iterations/reorder  body: { order: [iterId,…] }
+// Renumbers iterations to match the given order. Renames directories.
+// Only iterations in the provided list are renumbered; others get appended in
+// their existing order. All affected task `iteration:` frontmatter is rewritten.
+export async function handleIterReorder(req, res, trackSlug) {
+  if (!readTrack(trackSlug)) return sendJson(res, 404, { error: 'track not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const order = Array.isArray(p.order) ? p.order : null;
+  if (!order || !order.length) return sendJson(res, 400, { error: 'order: [iter_id,…] required' });
+  const iters = listIterations(trackSlug);
+  const idIdx = new Map(iters.map(it => [it.id, it]));
+  const seen = new Set();
+  const final = [];
+  for (const id of order) {
+    const it = idIdx.get(id);
+    if (!it || seen.has(id)) continue;
+    final.push(it); seen.add(id);
+  }
+  // append unmentioned iterations in original order
+  for (const it of iters) if (!seen.has(it.id)) final.push(it);
+
+  // Rename to staging suffix to avoid collisions, then to final id.
+  const stagedNames = [];
+  for (let i = 0; i < final.length; i++) {
+    const it = final[i];
+    const newId = String(i + 1).padStart(3, '0');
+    const stagingDir = path.join(trackItersDir(trackSlug), `__tmp_${newId}-${it.slug}`);
+    fs.renameSync(it.dir, stagingDir);
+    stagedNames.push({ stagingDir, finalDir: iterDirFor(trackSlug, newId, it.slug), newId, it });
+  }
+  // remember active id for remap
+  const activeBefore = trackActive(trackSlug);
+  let activeAfter = '';
+  for (const s of stagedNames) {
+    fs.renameSync(s.stagingDir, s.finalDir);
+    // rewrite README + tasks
+    const readmePath = path.join(s.finalDir, 'README.md');
+    if (exists(readmePath)) {
+      const [fm, body] = parseTask(readText(readmePath));
+      const fm2 = { ...(fm || {}), id: s.newId, slug: s.it.slug, track: trackSlug };
+      fs.writeFileSync(readmePath, serializeTask(fm2, body || ''), 'utf-8');
+    }
+    const td = path.join(s.finalDir, 'tasks');
+    if (exists(td)) {
+      for (const tf of fs.readdirSync(td)) {
+        if (!tf.endsWith('.md')) continue;
+        const tp = path.join(td, tf);
+        const [tfm, tb] = parseTask(readText(tp));
+        if (!tfm) continue;
+        tfm.iteration = s.newId;
+        tfm.track = trackSlug;
+        fs.writeFileSync(tp, serializeTask(tfm, tb || ''), 'utf-8');
+      }
+    }
+    if (activeBefore === s.it.id) activeAfter = s.newId;
+  }
+  if (activeAfter) setTrackActive(trackSlug, activeAfter);
+  sendJson(res, 200, { ok: true, order: stagedNames.map(s => s.newId) });
+}
+
+// POST /api/track/:slug/iteration/:id/tasks  body: { title, assignee, deps?, estimate? }
+export async function handleTaskCreate(req, res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  let p; try { p = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const title = String(p.title || '').trim();
+  if (!title) return sendJson(res, 400, { error: 'title required' });
+  const assignee = String(p.assignee || 'user').trim();
+  const estimate = String(p.estimate || 'S').trim();
+  let deps = Array.isArray(p.deps) ? p.deps : (typeof p.deps === 'string' ? p.deps.split(',').map(s => s.trim()).filter(Boolean) : []);
+  const id = 'T' + String(highestTaskId() + 1).padStart(3, '0');
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 40) || 'task';
+  const fm = {
+    id, title, iteration: iterId, track: trackSlug,
+    assignee, status: 'todo', attempts: 0, deps, estimate,
+  };
+  const body = '\n## Goal\n\n## Context\n\n## Acceptance criteria\n- [ ] \n\n## How to verify\n\n## Subtasks\n\n## Notes\n';
+  const td = path.join(it.dir, 'tasks');
+  fs.mkdirSync(td, { recursive: true });
+  fs.writeFileSync(path.join(td, `${id}-${slug}.md`), serializeTask(fm, body), 'utf-8');
+  sendJson(res, 200, { ok: true, id });
 }
 
 export function handleTask(res, tid) {

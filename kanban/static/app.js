@@ -15,9 +15,17 @@ function setTab(tab) {
 
 function updateHeader() {
   const iter = STATE.board.iteration;
+  const actives = STATE.board.actives || [];
   const iterEl = document.getElementById('iter-name');
-  if (!iter) iterEl.innerHTML = `<span style="color:var(--text-dim)">no active iteration</span>`;
-  else iterEl.textContent = iter.track ? `${iter.track} · iter ${iter.id}` : `Iteration ${iter.id}`;
+  if (STATE.boardTrack) {
+    if (iter) iterEl.textContent = `${STATE.boardTrack} · iter ${iter.id}${iter.fm?.title ? ' · ' + iter.fm.title : ''}`;
+    else iterEl.innerHTML = `<span style="color:var(--text-dim)">${STATE.boardTrack} · no active iter</span>`;
+  } else if (actives.length) {
+    iterEl.textContent = `All active · ${actives.length} iter${actives.length > 1 ? 's' : ''}`;
+  } else {
+    iterEl.innerHTML = `<span style="color:var(--text-dim)">no active iterations</span>`;
+  }
+  populateBoardTrackPicker();
 
   const tracksBadge = document.getElementById('tracks-badge');
   const trackCount = (STATE.tracks.tracks || []).length;
@@ -46,8 +54,9 @@ function updateHeader() {
 
 async function refresh() {
   try {
+    const boardUrl = STATE.boardTrack ? `/api/board?track=${encodeURIComponent(STATE.boardTrack)}` : '/api/board';
     const [board, tracks, queue, project] = await Promise.all([
-      api('/api/board'), api('/api/tracks'), api('/api/queue'),
+      api(boardUrl), api('/api/tracks'), api('/api/queue'),
       api('/api/project').catch(() => null),
     ]);
     STATE.board = board;
@@ -92,6 +101,33 @@ function bindChrome() {
   document.getElementById('theme-toggle').addEventListener('click', () => {
     applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
   });
+  const sel = document.getElementById('board-track');
+  if (sel) sel.addEventListener('change', () => {
+    STATE.boardTrack = sel.value || null;
+    refresh();
+  });
+}
+
+function populateBoardTrackPicker() {
+  const sel = document.getElementById('board-track');
+  if (!sel) return;
+  const tracks = STATE.tracks.tracks || [];
+  const cur = STATE.boardTrack || '';
+  const want = ['', ...tracks.map(t => t.slug)].join('|');
+  if (sel.dataset.populated === want && sel.value === cur) return;
+  sel.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = '';
+  optAll.textContent = 'All active tracks';
+  sel.appendChild(optAll);
+  for (const t of tracks) {
+    const o = document.createElement('option');
+    o.value = t.slug;
+    o.textContent = `${t.slug}${t.active ? ' · iter ' + t.active : ''}`;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+  sel.dataset.populated = want;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -103,6 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   bindChrome();
   bindModal();
+  bindFormModal();
   refresh();
   setInterval(refresh, 5000);
 });

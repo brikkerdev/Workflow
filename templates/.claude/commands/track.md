@@ -1,16 +1,18 @@
 ---
-description: "Показать статус одного трека: список тасков с assignee/status/deps, как /iter но для трека."
-allowed-tools: Read, Glob, Grep
+description: "Показать таймлайн трека: цель, активная итерация, все запланированные/закрытые итерации."
+allowed-tools: Read, Bash
 argument-hint: "<track-slug>"
 ---
 
-Покажи статус трека: $ARGUMENTS.
+Покажи трек: $ARGUMENTS.
 
 Шаги:
-1. Проверь что папка `.workflow/tracks/<slug>/` существует. Если нет — стоп.
-2. Прочитай `README.md` трека. Выведи строку с slug и целью (1-2 строки).
-3. Прочитай все `tasks/T*.md` файлы трека. Для каждого извлеки frontmatter (`id`, `title`, `assignee`, `status`, `deps`, `estimate`).
-4. Сгруппируй и выведи по статусу в порядке: `in-progress` → `review` → `todo` → `blocked` → `done`. Формат: `T### · status · assignee · estimate · title` + `deps: [...]` если не пусто.
-5. В конце короткая сводка: сколько в каком статусе, есть ли ready-to-dispatch таски (`todo` с закрытыми deps; deps могут жить в итерации или других треках — ищи везде).
+1. `curl http://127.0.0.1:7777/api/track/<slug>`. Если 404 — стоп.
+2. Выведи:
+   - заголовок `<slug> · <title>`
+   - первый параграф из README (после `## Цель`)
+   - active iter id (или "нет активной")
+3. Таймлайн итераций сверху вниз: `<id> · <slug> · <status> · <task_count> tasks · <title>`. Outline statuses: planned (◯), active (●), done (✓), abandoned (×).
+4. В конце сводка: total iters, по статусу.
 
-Не редактируй ничего. Только чтение.
+Не редактируй ничего.

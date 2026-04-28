@@ -1,16 +1,16 @@
 ---
-description: "Архивировать трек: переместить .workflow/tracks/<slug>/ в .workflow/archive/tracks/<slug>/."
-allowed-tools: Read, Glob, Bash, AskUserQuestion
+description: "Архивировать трек (move в .workflow/archive/tracks/)."
+allowed-tools: Read, Bash, AskUserQuestion
 argument-hint: "<track-slug>"
 ---
 
 Архивируй трек: $ARGUMENTS.
 
 Шаги:
-1. Проверь что `.workflow/tracks/<slug>/` существует. Если нет — стоп.
-2. Покажи короткую сводку трека: сколько тасков в каждом статусе. Если есть таски в `in-progress` или `review` — спроси через AskUserQuestion подтверждение «всё равно архивировать?». Без явного «да» — стоп.
-3. Через Bash создай `.workflow/archive/tracks/` если ещё нет (`mkdir -p`).
-4. Через Bash перенеси папку: `mv .workflow/tracks/<slug> .workflow/archive/tracks/<slug>`.
-5. Сообщи: трек архивирован, виден в `.workflow/archive/tracks/<slug>/`.
-
-Не правь содержимое тасков и README — архив сохраняет состояние as-is.
+1. `curl http://127.0.0.1:7777/api/track/<slug>` — если 404 стоп.
+2. Покажи сводку (iter counts). Если есть active iter — спроси через AskUserQuestion подтверждение.
+3. После подтверждения:
+   ```
+   curl -s -X DELETE http://127.0.0.1:7777/api/track/<slug>
+   ```
+4. Сообщи куда архив переехал (поле `archived_to` в ответе).

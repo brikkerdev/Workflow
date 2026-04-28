@@ -15,16 +15,14 @@ export const ROOT = resolveProjectRoot();
 export const WORKFLOW = path.join(ROOT, '.workflow');
 export const QUEUE_DIR = path.join(WORKFLOW, 'queue');
 export const TRACKS_DIR = path.join(WORKFLOW, 'tracks');
-export const ITERATIONS_DIR = path.join(WORKFLOW, 'iterations');
+export const ARCHIVE_DIR = path.join(WORKFLOW, 'archive');
 export const AGENTS_DIR = path.join(ROOT, '.claude', 'agents');
 
 // Static assets ship inside the Workflow repo, not the project.
 export const STATIC_DIR = path.resolve(__dirname, '..');
 
-// Full lifecycle:
-//   todo  ->  queued  ->  in-progress  ->  verifying
-//                                            |  reject -> in-progress (attempt++)
-//                                            |  approve -> done (after commit+push)
+// Task lifecycle:
+//   todo  ->  queued  ->  in-progress  ->  verifying  ->  done
 //   blocked is a side state any active status can park in.
 export const VALID_STATUSES = ['todo', 'queued', 'in-progress', 'verifying', 'blocked', 'done'];
 
@@ -37,8 +35,21 @@ export const ALLOWED_TRANSITIONS = {
   'done':        new Set(['todo']),
 };
 
+// Iteration lifecycle (stubs are valid):
+//   planned  ->  active  ->  done
+//                       ->  abandoned
+export const ITER_STATUSES = ['planned', 'active', 'done', 'abandoned'];
+
 export function transitionsJson() {
   const out = {};
   for (const [k, v] of Object.entries(ALLOWED_TRANSITIONS)) out[k] = [...v];
   return out;
+}
+
+// Per-track paths
+export function trackDir(slug) { return path.join(TRACKS_DIR, slug); }
+export function trackActiveFile(slug) { return path.join(trackDir(slug), 'ACTIVE'); }
+export function trackItersDir(slug) { return path.join(trackDir(slug), 'iterations'); }
+export function iterDirFor(slug, iterId, iterSlug) {
+  return path.join(trackItersDir(slug), `${iterId}-${iterSlug}`);
 }

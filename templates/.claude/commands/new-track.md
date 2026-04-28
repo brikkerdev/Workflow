@@ -1,21 +1,21 @@
 ---
-description: "Создать новый трек (долгоживущий поток работы вне итерации). Спрашивает slug и цель."
-allowed-tools: Read, Glob, Write, Bash, AskUserQuestion
+description: "Создать новый трек (долгоживущий поток работы). Внутри трека живут итерации в виде таймлайна."
+allowed-tools: Read, Bash, AskUserQuestion
 ---
 
 Создай новый трек.
 
 Шаги:
-1. Через AskUserQuestion (или прими параметры из аргумента) спроси:
-   - **slug** (короткое kebab-case, например `art-vol-1`, `audio-pack-1`)
-   - **цель** трека (1-2 предложения)
-2. Проверь что папка `.workflow/tracks/<slug>/` ещё не существует. Если есть — стоп с ошибкой.
-3. Прочитай `.workflow/templates/track.md`. Подставь:
-   - `slug` → ответ пользователя
-   - `started: <today YYYY-MM-DD>`
-   - цель в раздел **Цель** (заменить дефолтный текст шаблона)
-4. Запиши `README.md` трека через Write.
-5. Создай папку `tasks/` внутри трека через Bash mkdir.
-6. Сообщи: трек создан, добавляй таски через `/new-track-task <slug>`.
+1. Через AskUserQuestion спроси:
+   - **slug** (kebab-case, например `art-vol-1`, `core-loop`)
+   - **title** (короткое название трека)
+   - **цель** (1-2 предложения, что трек делает)
+2. Сделай POST на kanban API:
+   ```
+   curl -s -X POST http://127.0.0.1:7777/api/tracks \
+     -H 'content-type: application/json' \
+     -d '{"slug":"<slug>","title":"<title>","body":"## Цель\n<цель>\n\n## Scope\n- ...\n\n## Заметки\n"}'
+   ```
+3. Если ответ `{"ok":true}` — сообщи: трек создан, добавляй итерации через `/new-iter <slug>` или `/plan-track <slug>`. Если ошибка — выведи её.
 
-Scope и заметки в README пользователь заполнит сам или попросит отдельно — оставь TODO-плейсхолдеры из шаблона.
+Не пиши файлы напрямую — kanban сервер единственный писатель `.workflow/`.

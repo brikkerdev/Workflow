@@ -10,23 +10,22 @@ const COL_TITLE = {
 };
 
 const STATE = {
-  board:  { tasks: [], agents: [], iteration: null, queue_size: 0, valid_statuses: COLS, transitions: {} },
+  board:  { tasks: [], agents: [], iteration: null, actives: [], queue_size: 0, valid_statuses: COLS, transitions: {} },
   tracks: { tracks: [] },
   queue:  { size: 0, items: [] },
   taskIndex: {},  // id -> task across iter+tracks
   currentTab: 'iteration',
+  boardTrack: null, // null = all-active aggregate; otherwise track slug
 };
 
 function rebuildIndex() {
   STATE.taskIndex = {};
   for (const t of (STATE.board.tasks || [])) STATE.taskIndex[t.id] = t;
-  for (const tr of (STATE.tracks.tracks || [])) for (const t of tr.tasks) STATE.taskIndex[t.id] = t;
 }
 
 function allTasks() {
   const out = [];
   for (const t of (STATE.board.tasks || [])) out.push(t);
-  for (const tr of (STATE.tracks.tracks || [])) for (const t of tr.tasks) out.push(t);
   return out;
 }
 
