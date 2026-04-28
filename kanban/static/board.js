@@ -61,10 +61,10 @@ function renderCard(t, opts = {}) {
         : `<div class="card-thumb"></div>`).join('')}</div>`
     : '';
 
-  // subtask progress
+  // subtask progress — show for active work, hide for terminal `done`
   const subs = t._subtasks || [];
   const subDone = subs.filter(s => s.checked).length;
-  const subHtml = subs.length
+  const subHtml = (subs.length && t.status !== 'done')
     ? `<div class="subprog"><div class="subbar"><i style="width:${Math.round(subDone*100/subs.length)}%"></i></div><span class="subtxt">${subDone}/${subs.length}</span></div>`
     : '';
 
