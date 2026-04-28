@@ -1713,6 +1713,29 @@ select.input {
   border-color: var(--line-0);
 }
 .verify-panel .vchev-spacer { display: inline-block; width: 20px; flex-shrink: 0; }
+.verify-panel .vchev-empty { color: var(--fg-3); opacity: 0.55; }
+.verify-panel .vchev-empty:hover { opacity: 1; color: var(--fg-1); }
+.verify-panel .vdetails-missing {
+  color: var(--fg-2);
+  font-style: italic;
+  border-style: dashed;
+}
+.verify-panel .vmissing-hint {
+  font-size: 12px;
+  color: var(--fg-1);
+  background: rgba(234,179,8,0.08);
+  border: 1px solid rgba(234,179,8,0.30);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.verify-panel .vmissing-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 .verify-panel .vtxt { flex: 1; font-size: 12px; color: var(--fg-0); }
 .verify-panel .vdetails {
   margin: 8px 0 4px 28px;

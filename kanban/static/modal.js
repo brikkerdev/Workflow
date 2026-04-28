@@ -381,29 +381,43 @@ function renderVerifyPanel() {
   if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
 
   const items = MODAL_VERIFY_ITEMS;
+  const missingDetails = items.filter(it => !(it.details && it.details.trim())).length;
   const itemsHtml = items.map((it, i) => {
     const hasDetails = it.details && it.details.trim();
     const expanded = it.expanded;
+    const chevTitle = hasDetails
+      ? (expanded ? 'collapse' : 'how to test')
+      : 'no verify hints — add 1-3 indented lines under this item in Acceptance criteria';
+    const chevGlyph = hasDetails ? (expanded ? '▾' : '▸') : '∅';
+    const detailsBody = expanded
+      ? (hasDetails
+          ? `<div class="vdetails">${renderMarkdown(it.details)}</div>`
+          : `<div class="vdetails vdetails-missing">no verify steps — edit <b>Acceptance criteria</b> section and add 1-3 indented lines under this <code>- [ ]</code></div>`)
+      : '';
     return `
-    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''} ${expanded ? 'expanded' : ''}">
+    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''} ${expanded ? 'expanded' : ''} ${hasDetails ? '' : 'no-details'}">
       <div class="vrow-h">
-        ${hasDetails ? `<button class="vchev" data-vt="${i}" title="${expanded ? 'collapse' : 'how to test'}">${expanded ? '▾' : '▸'}</button>` : `<span class="vchev-spacer"></span>`}
+        <button class="vchev ${hasDetails ? '' : 'vchev-empty'}" data-vt="${i}" title="${escapeHtml(chevTitle)}">${chevGlyph}</button>
         <span class="vtxt">${escapeHtml(it.text)}</span>
         <span class="vbtns">
           <button data-vi="${i}" data-vp="1" class="vp ${it.pass === true ? 'sel' : ''}">✓</button>
           <button data-vi="${i}" data-vp="0" class="vf ${it.pass === false ? 'sel' : ''}">✗</button>
         </span>
       </div>
-      ${hasDetails && expanded ? `<div class="vdetails">${renderMarkdown(it.details)}</div>` : ''}
+      ${detailsBody}
       <textarea class="vnote" data-vn="${i}" placeholder="что не так / комментарий" ${it.pass !== false ? 'style="display:none"' : ''}>${escapeHtml(it.note || '')}</textarea>
     </div>
   `; }).join('');
 
   const anyFail = items.some(i => i.pass === false);
   const allPass = items.length > 0 && items.every(i => i.pass === true);
+  const hintHtml = missingDetails > 0
+    ? `<div class="vmissing-hint">⚠ ${missingDetails} of ${items.length} items have no verify hints — agent should add indented lines under each <code>- [ ]</code> in Acceptance criteria</div>`
+    : '';
 
   panel.innerHTML = `
     <div class="vhead">Verification checklist (attempt ${(MODAL_TASK.attempts || 0) + (anyFail ? 1 : 0)})</div>
+    ${hintHtml}
     ${items.length ? itemsHtml : '<div class="task-md empty">no acceptance criteria — add some to the task body</div>'}
     <div class="vrow vrow-summary">
       <textarea id="vsummary" class="vnote" placeholder="общий summary (опционально, попадёт в коммит при approve)"></textarea>
@@ -448,6 +462,7 @@ async function submitVerify(decision) {
       body: JSON.stringify({ decision, summary, items }),
     });
     if (r.result === 'done') toast(`${MODAL_TASK.id} ✓ done · commit ${r.commit?.slice(0, 7) || ''}`, 'success');
+    else if (r.result === 'committing') toast(`${MODAL_TASK.id} → commit + push в фоне…`);
     else if (r.result === 'rework') toast(`${MODAL_TASK.id} → rework (attempt ${r.attempts})`, 'warn');
     else toast(`${MODAL_TASK.id} ${r.result}`);
     closeModal();

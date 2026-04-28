@@ -66,7 +66,12 @@ const PROTOCOL = [
   '2. workflow_set_subtasks(id, items) — lay out your plan once.',
   '3. workflow_complete_subtask(id, index) — tick boxes as you go.',
   '4. workflow_append_note(id, text) — record decisions/files touched.',
-  '5. workflow_submit_for_verify(id, summary) — when done.',
+  '5. Before submit: open the task .md and ensure EVERY `- [ ]` under',
+  '   "## Acceptance criteria" has 1-3 indented lines describing how to',
+  '   manually verify *that specific* item (paths, commands, expected output).',
+  '   These are shown as expandable hints in the kanban Verify panel — without',
+  '   them the user cannot test your work. Use Edit to add what is missing.',
+  '6. workflow_submit_for_verify(id, summary) — when done.',
   'Do NOT git commit/push. Server handles that on user approval.',
 ].join('\n');
 

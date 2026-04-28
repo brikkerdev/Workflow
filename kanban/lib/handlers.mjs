@@ -18,6 +18,7 @@ import { parseTask, serializeTask, replaceSection, appendToSection, parseCheckli
 import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
+import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -670,29 +671,73 @@ export async function handleVerify(req, res, tid) {
     return sendJson(res, 200, { result: 'rework', attempts: attempt, status: fm.status });
   }
 
-  // approve: write note, run commit+push, mark done
+  // approve: write note, then run commit+push in background.
   const block = buildApproveBlock(fm.attempts || 0, summary);
   const newBody = appendToSection(body, 'Notes', block);
   saveTask(p, fm, newBody);
 
-  const git = runCommitPush(p, fm, summary);
-  if (git.error && !git.commit) {
-    // commit itself failed → cannot proceed. Stay at verifying.
-    const errBlock = `### Commit failed — ${fmtDate()}\n\n${git.error}`;
-    const errBody = appendToSection(newBody, 'Notes', errBlock);
-    saveTask(p, fm, errBody);
-    return sendJson(res, 500, { error: git.error, result: 'commit_failed' });
-  }
+  // Respond immediately so the UI does not block on git.
+  sendJson(res, 202, { result: 'committing', task_id: tid });
 
-  // commit succeeded (or nothing to commit). Mark done. If push failed, note it.
-  let finalBody = newBody;
-  if (git.error) {
-    const warnBlock = `### Push failed — ${fmtDate()}\n\n${git.error}\n\nLocal commit ${git.commit?.slice(0, 7) || ''} is in place; push manually.`;
-    finalBody = appendToSection(newBody, 'Notes', warnBlock);
+  // Run commit/push asynchronously; persist + broadcast when done.
+  setImmediate(() => {
+    try {
+      const git = runCommitPush(p, fm, summary);
+      // Re-read latest body in case anything else mutated it.
+      const cur = findTask(tid);
+      if (!cur[0]) return;
+      let curFm = cur[1];
+      let curBody = cur[2];
+
+      if (git.error && !git.commit) {
+        const errBlock = `### Commit failed — ${fmtDate()}\n\n${git.error}`;
+        curBody = appendToSection(curBody, 'Notes', errBlock);
+        saveTask(cur[0], curFm, curBody);
+        broadcastChange('change', { kind: 'verify', task_id: tid, result: 'commit_failed' });
+        return;
+      }
+      if (git.error) {
+        const warnBlock = `### Push failed — ${fmtDate()}\n\n${git.error}\n\nLocal commit ${git.commit?.slice(0, 7) || ''} is in place; push manually.`;
+        curBody = appendToSection(curBody, 'Notes', warnBlock);
+      }
+      curFm.status = 'done';
+      saveTask(cur[0], curFm, curBody);
+      broadcastChange('change', { kind: 'verify', task_id: tid, result: 'done', commit: git.commit });
+    } catch (e) {
+      try {
+        const cur = findTask(tid);
+        if (cur[0]) {
+          const errBlock = `### Commit failed — ${fmtDate()}\n\n${String(e.message || e)}`;
+          const errBody = appendToSection(cur[2], 'Notes', errBlock);
+          saveTask(cur[0], cur[1], errBody);
+          broadcastChange('change', { kind: 'verify', task_id: tid, result: 'commit_failed' });
+        }
+      } catch {}
+    }
+  });
+}
+
+// Resolve the set of paths that "belong" to this task at commit time.
+// Strategy: paths dirty now whose content differs from this task's claim-time
+// snapshot, minus paths claimed by other still-active tasks (their own diffs
+// against their snapshots).
+function resolveTaskPaths(tid) {
+  const snap = loadSnapshot(tid);
+  const cur = currentDirty();
+  const ours = diffAgainstSnapshot(snap, cur);
+  if (!ours.size) return [];
+
+  // Subtract paths owned by other active tasks.
+  const others = new Set();
+  for (const t of listAllTasks()) {
+    if (t.id === tid) continue;
+    if (t.status !== 'in-progress' && t.status !== 'verifying') continue;
+    const s = loadSnapshot(t.id);
+    if (!s) continue;
+    for (const p of diffAgainstSnapshot(s, cur)) others.add(p);
   }
-  fm.status = 'done';
-  saveTask(p, fm, finalBody);
-  return sendJson(res, 200, { result: 'done', commit: git.commit, push_warning: git.error || null });
+  for (const p of others) ours.delete(p);
+  return [...ours];
 }
 
 function runCommitPush(taskPath, fm, summary) {
@@ -703,12 +748,21 @@ function runCommitPush(taskPath, fm, summary) {
       ? `${fm.assignee} <${fm.assignee}@workflow.local>`
       : null;
 
-    const add = spawnSync('git', ['add', '-A'], { cwd: ROOT, encoding: 'utf-8' });
+    const paths = resolveTaskPaths(tid);
+    if (!paths.length) {
+      deleteSnapshot(tid);
+      return { commit: null, note: 'no changes to commit' };
+    }
+
+    // Stage only this task's paths. `--all -- <pathspec>` covers add/modify/delete.
+    const add = spawnSync('git', ['add', '--all', '--', ...paths], { cwd: ROOT, encoding: 'utf-8' });
     if (add.status !== 0) return { error: `git add failed: ${add.stderr || add.stdout}` };
 
-    // Check if there's anything staged.
     const diff = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: ROOT });
-    if (diff.status === 0) return { commit: null, note: 'no changes to commit' };
+    if (diff.status === 0) {
+      deleteSnapshot(tid);
+      return { commit: null, note: 'no changes to commit' };
+    }
 
     const msg = `${tid}: ${title}\n\n${summary || ''}`.trim();
     const args = ['commit', '-m', msg];
@@ -722,6 +776,7 @@ function runCommitPush(taskPath, fm, summary) {
     const push = spawnSync('git', ['push'], { cwd: ROOT, encoding: 'utf-8' });
     if (push.status !== 0) return { error: `git push failed: ${push.stderr || push.stdout}`, commit };
 
+    deleteSnapshot(tid);
     return { commit };
   } catch (e) {
     return { error: String(e.message || e) };
@@ -736,8 +791,13 @@ export async function handleClaim(req, res, tid) {
   if (fm.status !== 'queued' && fm.status !== 'in-progress') {
     return sendJson(res, 409, { error: `can claim only queued, current: ${fm.status}` });
   }
+  const wasInProgress = fm.status === 'in-progress';
   fm.status = 'in-progress';
   saveTask(p, fm, body);
+  // Snapshot dirty repo state on first claim, so commit can scope to this task.
+  if (!wasInProgress && !loadSnapshot(tid)) {
+    try { captureSnapshot(tid); } catch (e) { process.stderr.write(`[kanban] snapshot failed for ${tid}: ${e.message}\n`); }
+  }
   // remove queue trigger if present
   deleteTrigger(tid);
   return sendJson(res, 200, { ok: true, task_id: tid, status: fm.status, attempts: fm.attempts || 0 });
