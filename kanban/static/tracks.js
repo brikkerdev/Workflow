@@ -355,10 +355,15 @@ async function reorderIters(track, fromId, toId) {
 
 let FORM_SUBMIT = null;
 
-function openFormModal(title, innerHtml, onSubmit) {
+function openFormModal(title, innerHtml, onSubmit, opts = {}) {
   FORM_SUBMIT = onSubmit;
   document.getElementById('form-title').textContent = title;
   document.getElementById('form-body').innerHTML = innerHtml;
+  const m = document.querySelector('#form-bg .modal');
+  if (m) {
+    m.classList.toggle('modal-lg',   opts.size === 'lg' || !opts.size);
+    m.classList.toggle('modal-xl',   opts.size === 'xl');
+  }
   document.getElementById('form-bg').classList.add('open');
 }
 

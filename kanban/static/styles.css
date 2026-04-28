@@ -972,8 +972,11 @@ select.select-native:hover { border-color: var(--line-1); }
   overflow: hidden;
   animation: modalIn .18s ease-out;
 }
-.modal.modal-lg, .modal.task-modal { width: 720px; }
+.modal.modal-lg { width: 720px; }
+.modal.modal-xl { width: 960px; }
 .modal.task-modal { width: 1000px; }
+.modal.modal-xl .form-row textarea,
+.modal.modal-xl .textarea { min-height: 320px; }
 @keyframes modalIn {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }

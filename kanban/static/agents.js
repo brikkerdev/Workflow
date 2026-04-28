@@ -151,7 +151,7 @@ async function openAgentForm(slug) {
     closeFormModal();
     AGENT_DETAIL_CACHE = null;
     await refresh();
-  });
+  }, { size: 'xl' });
 
   if (!isNew) {
     setTimeout(() => {
