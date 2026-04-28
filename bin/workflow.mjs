@@ -155,6 +155,26 @@ function cmdInit(project) {
     fs.copyFileSync(settingsSrc, settingsDst);
   }
 
+  // .mcp.json — wire the workflow stdio MCP server using this repo's absolute path
+  const mcpDst = path.join(project, '.mcp.json');
+  if (!fs.existsSync(mcpDst)) {
+    const mcpServerPath = path.join(REPO, 'kanban', 'mcp', 'server.mjs').replace(/\\/g, '/');
+    const mcp = {
+      mcpServers: {
+        workflow: {
+          type: 'stdio',
+          command: 'node',
+          args: [mcpServerPath],
+          env: {
+            WORKFLOW_PROJECT: project.replace(/\\/g, '/'),
+            WORKFLOW_KANBAN: 'http://127.0.0.1:7777',
+          },
+        },
+      },
+    };
+    fs.writeFileSync(mcpDst, JSON.stringify(mcp, null, 2) + '\n', 'utf-8');
+  }
+
   console.log(`[workflow] done. Next:`);
   console.log(`           cd ${project}`);
   console.log(`           workflow up`);

@@ -1,10 +1,12 @@
-// Task detail modal — read/edit frontmatter, deps chip picker, attachments grid.
+// Task detail modal — read/edit frontmatter, deps, attachments, verification.
 
 let MODAL_TASK = null;
-let MODAL_DEPS = [];          // current deps chips
-let MODAL_ATTACHMENTS = [];   // current attachment items
+let MODAL_DEPS = [];
+let MODAL_ATTACHMENTS = [];
+let MODAL_VERIFY_OPEN = false;
+let MODAL_VERIFY_ITEMS = []; // [{ text, pass: true|false|null, note }]
 
-async function openModal(id) {
+async function openModal(id, opts = {}) {
   try {
     MODAL_TASK = await api(`/api/task/${id}`);
   } catch (e) {
@@ -20,12 +22,13 @@ async function openModal(id) {
 
   fillSelect('m-status', STATE.board.valid_statuses || COLS, t.status);
   fillSelect('m-assignee', ['user', ...(STATE.board.agents || [])], t.assignee, name => ({
-    text: name,
-    color: agentColor(name),
+    text: name, color: agentColor(name),
   }));
   fillSelect('m-estimate', ['S', 'M', 'L'], t.estimate || 'S');
 
-  // Deps picker
+  const attEl = document.getElementById('m-attempts');
+  if (attEl) attEl.textContent = `attempts: ${Number(t.attempts || 0)}`;
+
   MODAL_DEPS = [...(t.deps || [])];
   renderDepsChips();
   fillDepsAddSelect();
@@ -36,11 +39,22 @@ async function openModal(id) {
   setSection('m-verify',     t._verify);
   setSection('m-notes',      t._notes);
 
-  // Attachments
+  renderSubtasks(t._subtasks || []);
+
   MODAL_ATTACHMENTS = [...(t._attachments || [])];
   renderAttachments();
 
   document.getElementById('m-dispatch').disabled = !(t.status === 'todo' && t.assignee !== 'user');
+
+  // Verification block
+  const canVerify = t.status === 'verifying' || t.status === 'in-progress';
+  const verifyBtn = document.getElementById('m-verify-btn');
+  verifyBtn.style.display = canVerify ? '' : 'none';
+  MODAL_VERIFY_OPEN = false;
+  MODAL_VERIFY_ITEMS = (t._criteria || []).map(c => ({ text: c.text, pass: null, note: '' }));
+  renderVerifyPanel();
+  if (opts.verify && canVerify) toggleVerify(true);
+
   document.getElementById('modal-bg').classList.add('open');
 }
 
@@ -69,6 +83,35 @@ function setSection(id, content) {
     el.textContent = '(empty)';
     el.classList.add('empty-c');
   }
+}
+
+// ---------- Subtasks ----------
+
+function renderSubtasks(items) {
+  const wrap = document.getElementById('m-subtasks');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'content empty-c';
+    empty.textContent = '(no subtasks yet — agent fills these)';
+    wrap.appendChild(empty);
+    return;
+  }
+  const done = items.filter(s => s.checked).length;
+  const head = document.createElement('div');
+  head.className = 'sub-head';
+  head.innerHTML = `<span>${done}/${items.length}</span><div class="subbar"><i style="width:${Math.round(done * 100 / items.length)}%"></i></div>`;
+  wrap.appendChild(head);
+  const list = document.createElement('ul');
+  list.className = 'sub-list';
+  for (const s of items) {
+    const li = document.createElement('li');
+    li.className = 'sub' + (s.checked ? ' done' : '');
+    li.innerHTML = `<span class="sub-box">${s.checked ? '✓' : '○'}</span><span class="sub-text">${escapeHtml(s.text)}</span>`;
+    list.appendChild(li);
+  }
+  wrap.appendChild(list);
 }
 
 // ---------- Deps chips ----------
@@ -107,7 +150,6 @@ function fillDepsAddSelect() {
   sel.innerHTML = '<option value="">+ add dep…</option>';
   const seen = new Set([MODAL_TASK?.id, ...MODAL_DEPS]);
   const all = allTasks().filter(t => !seen.has(t.id));
-  // sort by id
   all.sort((a, b) => a.id.localeCompare(b.id));
   for (const t of all) {
     const o = document.createElement('option');
@@ -209,6 +251,84 @@ function bindAttachmentsDnD() {
   });
 }
 
+// ---------- Verification panel ----------
+
+function toggleVerify(on) {
+  MODAL_VERIFY_OPEN = on != null ? !!on : !MODAL_VERIFY_OPEN;
+  renderVerifyPanel();
+}
+
+function renderVerifyPanel() {
+  const panel = document.getElementById('m-verify-panel');
+  if (!panel) return;
+  panel.classList.toggle('open', MODAL_VERIFY_OPEN);
+  if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
+
+  const items = MODAL_VERIFY_ITEMS;
+  const itemsHtml = items.map((it, i) => `
+    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''}">
+      <div class="vrow-h">
+        <span class="vtxt">${escapeHtml(it.text)}</span>
+        <span class="vbtns">
+          <button data-vi="${i}" data-vp="1" class="vp ${it.pass === true ? 'sel' : ''}">✓</button>
+          <button data-vi="${i}" data-vp="0" class="vf ${it.pass === false ? 'sel' : ''}">✗</button>
+        </span>
+      </div>
+      <textarea class="vnote" data-vn="${i}" placeholder="что не так / комментарий" ${it.pass !== false ? 'style="display:none"' : ''}>${escapeHtml(it.note || '')}</textarea>
+    </div>
+  `).join('');
+
+  const anyFail = items.some(i => i.pass === false);
+  const allPass = items.length > 0 && items.every(i => i.pass === true);
+
+  panel.innerHTML = `
+    <div class="vhead">Verification checklist (attempt ${(MODAL_TASK.attempts || 0) + (anyFail ? 1 : 0)})</div>
+    ${items.length ? itemsHtml : '<div class="content empty-c">no acceptance criteria — add some to the task body</div>'}
+    <div class="vrow vrow-summary">
+      <textarea id="vsummary" class="vnote" placeholder="общий summary (опционально, попадёт в коммит при approve)"></textarea>
+    </div>
+    <div class="vactions">
+      <button class="vapprove" ${allPass ? '' : 'disabled'}>Approve · commit + push + done</button>
+      <button class="vreject" ${anyFail ? '' : 'disabled'}>Reject · re-queue agent (attempt+1)</button>
+    </div>
+  `;
+
+  panel.querySelectorAll('button[data-vi]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.vi);
+      const v = btn.dataset.vp === '1';
+      MODAL_VERIFY_ITEMS[i].pass = v;
+      renderVerifyPanel();
+    });
+  });
+  panel.querySelectorAll('textarea[data-vn]').forEach(ta => {
+    ta.addEventListener('input', () => {
+      MODAL_VERIFY_ITEMS[Number(ta.dataset.vn)].note = ta.value;
+    });
+  });
+  panel.querySelector('.vapprove')?.addEventListener('click', () => submitVerify('approve'));
+  panel.querySelector('.vreject')?.addEventListener('click', () => submitVerify('reject'));
+}
+
+async function submitVerify(decision) {
+  if (!MODAL_TASK) return;
+  const summary = (document.getElementById('vsummary')?.value || '').trim();
+  const items = MODAL_VERIFY_ITEMS.map(it => ({ text: it.text, pass: it.pass === true, note: it.note || '' }));
+  try {
+    const r = await api(`/api/task/${MODAL_TASK.id}/verify`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, summary, items }),
+    });
+    if (r.result === 'done') toast(`${MODAL_TASK.id} ✓ done · commit ${r.commit?.slice(0, 7) || ''}`);
+    else if (r.result === 'rework') toast(`${MODAL_TASK.id} → rework (attempt ${r.attempts})`);
+    else toast(`${MODAL_TASK.id} ${r.result}`);
+    closeModal();
+    await refresh();
+  } catch (e) {
+    toast(`verify failed: ${e.message}`, 'error');
+  }
+}
+
 // ---------- Save / close ----------
 
 function closeModal() {
@@ -216,6 +336,8 @@ function closeModal() {
   MODAL_TASK = null;
   MODAL_DEPS = [];
   MODAL_ATTACHMENTS = [];
+  MODAL_VERIFY_OPEN = false;
+  MODAL_VERIFY_ITEMS = [];
 }
 
 async function saveModal() {
@@ -245,6 +367,7 @@ function bindModal() {
     await dispatchTask(MODAL_TASK.id);
     closeModal();
   });
+  document.getElementById('m-verify-btn').addEventListener('click', () => toggleVerify());
   document.getElementById('modal-bg').addEventListener('click', e => {
     if (e.target.id === 'modal-bg') closeModal();
   });
@@ -252,7 +375,6 @@ function bindModal() {
     if (e.key === 'Escape' && document.getElementById('modal-bg').classList.contains('open')) closeModal();
   });
 
-  // Tint assignee select live as it changes
   document.getElementById('m-assignee').addEventListener('change', e => {
     document.getElementById('modal').style.setProperty('--agent', agentColor(e.target.value));
   });

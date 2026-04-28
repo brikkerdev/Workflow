@@ -18,6 +18,13 @@ export function queueItems() {
   return out;
 }
 
+export function readTrigger(tid) {
+  if (!exists(QUEUE_DIR)) return null;
+  const p = path.join(QUEUE_DIR, `${tid}.json`);
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(readText(p)); } catch { return null; }
+}
+
 export function deleteTrigger(tid) {
   if (!exists(QUEUE_DIR)) return false;
   const p = path.join(QUEUE_DIR, `${tid}.json`);
@@ -26,7 +33,7 @@ export function deleteTrigger(tid) {
   return true;
 }
 
-export function writeTrigger(tid, fm, taskPath) {
+export function writeTrigger(tid, fm, taskPath, opts = {}) {
   fs.mkdirSync(QUEUE_DIR, { recursive: true });
   const trigger = path.join(QUEUE_DIR, `${tid}.json`);
   const source = fm.iteration ? `iter:${fm.iteration}` : (fm.track ? `track:${fm.track}` : null);
@@ -38,6 +45,9 @@ export function writeTrigger(tid, fm, taskPath) {
     assignee: fm.assignee || null,
     task_path: rel(taskPath),
     queued_at: new Date().toISOString().replace(/\.\d{3}Z$/, ''),
+    attempts: Number(fm.attempts || 0),
+    reason: opts.reason || 'dispatch',
+    rework_notes: opts.reworkNotes || null,
   };
   fs.writeFileSync(trigger, JSON.stringify(payload, null, 2), 'utf-8');
 }

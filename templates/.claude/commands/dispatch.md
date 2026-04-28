@@ -1,5 +1,5 @@
 ---
-description: "Запустить background-агента на таск по его assignee. Аргумент — id таска (например T003). Если assignee=user — отказать."
+description: "Запустить background-агента на одиночный таск. Без git-операций — commit/push делает сервер kanban после approve."
 allowed-tools: Read, Glob, Edit, Bash, Agent
 argument-hint: "<task-id>"
 ---
@@ -7,34 +7,27 @@ argument-hint: "<task-id>"
 Запусти агента на таск с id из аргумента: $ARGUMENTS.
 
 Шаги:
-1. Найди файл таска. Ищи по обоим источникам:
-   - `.workflow/iterations/*/tasks/<task-id>-*.md` (итерация — обычно активная, но допусти любую)
-   - `.workflow/tracks/*/tasks/<task-id>-*.md` (треки)
-   Если не найден — стоп с сообщением. Если найдено больше одного — стоп с "ID коллизия, проверь нумерацию".
-2. Если таск из итерации — убедись что эта итерация совпадает с `.workflow/ACTIVE`. Иначе скажи "Таск из неактивной итерации" и стоп. Трек-таски диспатчатся независимо от ACTIVE.
-3. Прочитай frontmatter таска. Проверки:
-   - `status` должен быть `todo`. Иначе скажи в каком он состоянии и спроси хочет ли пользователь принудительно перезапустить.
-   - `deps` должны быть все в статусе `done`. Ищи их во всех источниках (итерация + все треки), не только в одном. Если есть незакрытые — перечисли их и стоп.
-   - `assignee` должен НЕ быть `user`. Если `user` — скажи "Это твой таск, делай руками" и стоп.
-   - `assignee` должен соответствовать существующему `.claude/agents/<assignee>.md`. Если нет — стоп с сообщением "Agent не зарегистрирован".
-4. Поменяй `status` таска на `in-progress` через Edit.
-5. Запусти Agent в **background-режиме** (`run_in_background: true`):
-   - `subagent_type`: значение `assignee` из frontmatter
+1. Найди файл таска (`.workflow/iterations/*/tasks/<id>-*.md` или `.workflow/tracks/*/tasks/<id>-*.md`). Если не найден — стоп.
+2. Прочитай frontmatter. Проверки:
+   - `status` должен быть `todo` или `queued`. Иначе скажи в каком он состоянии.
+   - `deps` все в `done` (ищи во всех источниках).
+   - `assignee` ≠ `user`, и `.claude/agents/<assignee>.md` существует.
+3. Если status=todo — попроси пользователя сначала нажать ▶ Start в kanban (это поставит queued + создаст триггер). Если status=queued и триггер есть — продолжай.
+4. Запусти Agent в **background-режиме** (`run_in_background: true`):
+   - `subagent_type`: значение `assignee`
    - `description`: первые 3-5 слов title таска
-   - `prompt`: полное содержимое файла таска (как одну строку), плюс инструкция:
+   - `prompt`:
      ```
-     Это таск из workflow-системы проекта. Полный путь файла: <абсолютный путь>.
+     Workflow task. Файл: <абсолютный путь>. attempts=<N>.
 
-     Прочитай содержимое таска ниже, выполни Acceptance criteria, затем:
-     1. Через Edit допиши в секцию `Notes` отчёт: что сделано, какие файлы тронуты, ключевые решения, что должен проверить пользователь.
-     2. Через Edit поменяй frontmatter `status` с `in-progress` на `review`.
-     3. Закоммить и запушить результат в git по шаблону `.workflow/templates/commit.md`:
-        - `git add -A` (gitignore сам отфильтрует Library/Logs/Temp).
-        - `git commit -m "<сообщение по шаблону>" --author="<твой assignee> <<assignee>@hashkill.local>"`.
-        - `git push origin main`. Если push падает — допиши в Notes "push failed: <reason>", работу не откатывай.
-        - Если файлы не менялись (только исследование) — пропусти коммит и push, в Notes напиши "no changes to commit".
+     Используй MCP инструменты `workflow_*`:
+     1. workflow_claim_task(task_id)
+     2. workflow_get_task(task_id)
+     3. workflow_set_subtasks(task_id, [...]) — распланируй
+     4. workflow_complete_subtask(task_id, index) — по ходу
+     5. workflow_append_note(task_id, text) — решения/находки
+     6. workflow_submit_for_verify(task_id, summary) — когда готово
 
-     === TASK FILE ===
-     <содержимое таска>
+     НЕ делай git add/commit/push. Сервер kanban закоммитит после approve пользователя.
      ```
-6. Сообщи пользователю: какой агент запущен на каком таске, что уведомление придёт по завершении, и что после возврата следует пройти `/verify <task-id>`.
+5. Сообщи пользователю: какой агент запущен, что после возврата нужно открыть таск в kanban и пройти verify.

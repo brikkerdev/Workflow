@@ -14,10 +14,13 @@ allowed-tools: Read, Glob, Write, Edit, Bash
    - **assignee** (один из: `user`, `architect`, `developer`, `ugui-designer`, `pencil-designer`, `2d-artist`, `animator`, `sound-designer`, `game-designer`)
    - **estimate** (S | M | L)
    - **deps** (список существующих T### через запятую, либо пусто)
-5. Прочитай `.workflow/templates/task.md`. Подставь:
+5. Прочитай README активной итерации, достань `track` из её frontmatter (итерация всегда привязана к треку через /new-iter).
+6. Прочитай `.workflow/templates/task.md`. Подставь:
    - `id` → новый T###
    - `title` → ответ пользователя
    - `iteration` → id активной итерации
+   - `track` → slug трека из шага 5
+   - `attempts` → 0
    - `assignee`, `estimate`, `deps` → ответы пользователя
 6. Slug файла: `<title>` в нижнем регистре, пробелы → дефисы, не-латиница транслитерирована или укорочена. Имя файла: `T###-<slug>.md`.
 7. Запиши новый файл через Write.

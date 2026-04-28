@@ -30,7 +30,7 @@ function fmLine(k, v) {
 }
 
 export function serializeTask(fm, body) {
-  const order = ['id', 'title', 'iteration', 'assignee', 'status', 'deps', 'estimate'];
+  const order = ['id', 'title', 'iteration', 'track', 'assignee', 'status', 'attempts', 'deps', 'estimate'];
   const lines = ['---'];
   const seen = new Set();
   for (const k of order) {
@@ -53,4 +53,50 @@ export function extractSection(body, name) {
   const nxt = /^##\s+/m.exec(tail);
   const end = nxt ? start + nxt.index : body.length;
   return body.slice(start, end).trim();
+}
+
+// Returns { start, end, header } where start..end covers section body.
+// If section missing returns null.
+export function locateSection(body, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const startRe = new RegExp(`^(##\\s+${escaped}\\s*)$`, 'm');
+  const m = startRe.exec(body);
+  if (!m) return null;
+  const headerEnd = m.index + m[0].length;
+  const tail = body.slice(headerEnd);
+  const nxt = /^##\s+/m.exec(tail);
+  const end = nxt ? headerEnd + nxt.index : body.length;
+  return { headerStart: m.index, headerEnd, end, header: m[0] };
+}
+
+export function replaceSection(body, name, newContent) {
+  const loc = locateSection(body, name);
+  const block = `## ${name}\n${newContent.replace(/\s+$/, '')}\n`;
+  if (!loc) {
+    const sep = body.endsWith('\n\n') ? '' : (body.endsWith('\n') ? '\n' : '\n\n');
+    return body + sep + block;
+  }
+  const after = body.slice(loc.end);
+  const sep = after.startsWith('## ') ? '\n' : '';
+  return body.slice(0, loc.headerStart) + block + sep + after;
+}
+
+export function appendToSection(body, name, addition) {
+  const loc = locateSection(body, name);
+  if (!loc) return replaceSection(body, name, addition);
+  const before = body.slice(0, loc.end).replace(/\s+$/, '');
+  const after = body.slice(loc.end);
+  return before + '\n' + addition.replace(/\s+$/, '') + '\n' + (after.startsWith('\n') ? after : (after ? '\n' + after : ''));
+}
+
+// Parse markdown checklist items in a section. Returns [{ text, checked, line }].
+export function parseChecklist(body, sectionName) {
+  const sec = extractSection(body, sectionName);
+  if (!sec) return [];
+  const out = [];
+  for (const raw of sec.split('\n')) {
+    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/.exec(raw);
+    if (m) out.push({ checked: m[1].toLowerCase() === 'x', text: m[2] });
+  }
+  return out;
 }

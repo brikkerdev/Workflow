@@ -11,7 +11,7 @@ import { sendJson, serveStatic } from './lib/http.mjs';
 import {
   handleBoard, handleTracks, handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
-  handleProject,
+  handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
 } from './lib/handlers.mjs';
 
 function matchAttachment(p) {
@@ -41,9 +41,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()));
     } else if (req.method === 'POST') {
-      if (p.startsWith('/api/task/') && p.endsWith('/dispatch')) {
-        const parts = p.split('/');
-        return handleDispatch(res, decodeURIComponent(parts[parts.length - 2]));
+      const m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks)$/.exec(p);
+      if (m) {
+        const tid = decodeURIComponent(m[1]);
+        const action = m[2];
+        if (action === 'dispatch') return handleDispatch(res, tid);
+        if (action === 'verify') return handleVerify(req, res, tid);
+        if (action === 'claim') return handleClaim(req, res, tid);
+        if (action === 'submit') return handleSubmitVerify(req, res, tid);
+        if (action === 'note') return handleAppendNote(req, res, tid);
+        if (action === 'subtasks') return handleSubtasks(req, res, tid);
       }
       const att = matchAttachment(p);
       if (att && !att.name) return handleUploadAttachment(req, res, att.tid);

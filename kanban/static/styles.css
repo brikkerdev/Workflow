@@ -35,8 +35,10 @@
   --accent-edge:  rgba(245, 247, 252, 0.25);
 
   --dot-todo:        #c8cad3;
+  --dot-queued:      #b9b3ff;
   --dot-in-progress: #f0d59a;
   --dot-review:      #b8c8ff;
+  --dot-verifying:   #b8c8ff;
   --dot-blocked:     #e89a9a;
   --dot-done:        #6ad6a6;
 
@@ -69,8 +71,10 @@
   --accent-edge:  rgba(20, 22, 28, 0.25);
 
   --dot-todo:        #555a6e;
+  --dot-queued:      #6953c0;
   --dot-in-progress: #c08818;
   --dot-review:      #4068c8;
+  --dot-verifying:   #4068c8;
   --dot-blocked:     #c14d4d;
   --dot-done:        #2e9469;
 
@@ -152,8 +156,8 @@ button { font-family: inherit; }
 
 /* ============ board ============ */
 .board {
-  display: grid; grid-template-columns: repeat(5, 1fr);
-  gap: 24px; padding: 24px 32px 56px;
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 18px; padding: 24px 32px 56px;
   flex: 1; min-height: 0; overflow: auto;
 }
 .col { display: flex; flex-direction: column; min-width: 0; }
@@ -304,8 +308,10 @@ button { font-family: inherit; }
   display: inline-block; flex-shrink: 0;
 }
 .dot[data-s="todo"]        { background: var(--dot-todo); }
+.dot[data-s="queued"]      { background: var(--dot-queued); }
 .dot[data-s="in-progress"] { background: var(--dot-in-progress); }
 .dot[data-s="review"]      { background: var(--dot-review); }
+.dot[data-s="verifying"]   { background: var(--dot-verifying); }
 .dot[data-s="blocked"]     { background: var(--dot-blocked); }
 .dot[data-s="done"]        { background: var(--dot-done); }
 
@@ -610,6 +616,127 @@ button { font-family: inherit; }
   border-color: var(--agent);
 }
 .modal footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ============ subtask progress (card + modal) ============ */
+.subprog {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 0 4px;
+}
+.subbar {
+  flex: 1; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden;
+}
+.subbar > i { display: block; height: 100%; background: var(--agent, var(--text)); transition: width 200ms; }
+.subtxt {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.card .meta .it.attempts { color: var(--dot-blocked); }
+.card .actions .verify {
+  color: var(--dot-done); border-color: color-mix(in srgb, var(--dot-done) 35%, transparent);
+}
+.card .actions .verify:hover {
+  background: color-mix(in srgb, var(--dot-done) 14%, transparent);
+  border-color: var(--dot-done);
+}
+
+#m-subtasks .sub-head {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+  margin-bottom: 8px;
+}
+#m-subtasks .sub-head .subbar { flex: 1; height: 4px; }
+#m-subtasks .sub-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+#m-subtasks .sub {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 10px; background: var(--accent-bg); border: 1px solid var(--line);
+  border-radius: 8px; font-size: 12px; color: var(--text-soft);
+}
+#m-subtasks .sub.done { color: var(--text-dim); text-decoration: line-through; }
+#m-subtasks .sub-box {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--text-mid); flex-shrink: 0;
+}
+#m-subtasks .sub.done .sub-box { color: var(--dot-done); }
+
+/* attempts badge in modal header */
+.attempts-badge {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-dim); margin-left: auto; margin-right: 8px;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+}
+
+.modal section h3 .hint {
+  font-weight: 400; text-transform: none; letter-spacing: 0;
+  color: var(--text-faint); margin-left: 8px;
+}
+
+/* ============ verify panel ============ */
+.verify-panel { display: none; margin-top: 22px; }
+.verify-panel.open { display: block; }
+.verify-panel .vhead {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--text); font-weight: 600; margin-bottom: 12px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line-dim);
+}
+.verify-panel .vrow {
+  background: var(--accent-bg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+}
+.verify-panel .vrow.ok { border-color: color-mix(in srgb, var(--dot-done) 40%, transparent); }
+.verify-panel .vrow.fail { border-color: color-mix(in srgb, var(--dot-blocked) 50%, transparent); }
+.verify-panel .vrow-h {
+  display: flex; align-items: center; gap: 12px;
+}
+.verify-panel .vtxt { flex: 1; font-size: 12px; color: var(--text); }
+.verify-panel .vbtns { display: flex; gap: 4px; }
+.verify-panel .vbtns button {
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--line);
+  color: var(--text-mid); font-size: 14px; font-weight: 600;
+}
+.verify-panel .vbtns button.vp:hover, .verify-panel .vbtns button.vp.sel {
+  color: var(--dot-done); border-color: var(--dot-done);
+  background: color-mix(in srgb, var(--dot-done) 12%, transparent);
+}
+.verify-panel .vbtns button.vf:hover, .verify-panel .vbtns button.vf.sel {
+  color: var(--dot-blocked); border-color: var(--dot-blocked);
+  background: color-mix(in srgb, var(--dot-blocked) 12%, transparent);
+}
+.verify-panel .vnote {
+  width: 100%; margin-top: 8px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; font-family: inherit; font-size: 12px;
+  outline: none; resize: vertical; min-height: 50px;
+}
+.verify-panel .vnote:focus { border-color: var(--line-hov); }
+.verify-panel .vrow-summary { background: transparent; border: none; padding: 0; }
+.verify-panel .vrow-summary .vnote { min-height: 60px; }
+.verify-panel .vactions {
+  display: flex; gap: 8px; margin-top: 14px;
+}
+.verify-panel .vactions button {
+  flex: 1; padding: 9px 14px; font-size: 11px;
+  border-radius: 8px; cursor: pointer; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  background: transparent; color: var(--text-soft);
+  border: 1px solid var(--line);
+}
+.verify-panel .vactions button:disabled { opacity: 0.35; cursor: not-allowed; }
+.verify-panel .vactions .vapprove:not(:disabled) {
+  color: var(--dot-done); border-color: color-mix(in srgb, var(--dot-done) 50%, transparent);
+}
+.verify-panel .vactions .vapprove:not(:disabled):hover {
+  background: color-mix(in srgb, var(--dot-done) 14%, transparent);
+  border-color: var(--dot-done);
+}
+.verify-panel .vactions .vreject:not(:disabled) {
+  color: var(--dot-blocked); border-color: color-mix(in srgb, var(--dot-blocked) 50%, transparent);
+}
+.verify-panel .vactions .vreject:not(:disabled):hover {
+  background: color-mix(in srgb, var(--dot-blocked) 14%, transparent);
+  border-color: var(--dot-blocked);
+}
 
 /* ============ toast ============ */
 .toast {

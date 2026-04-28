@@ -21,13 +21,19 @@ export const AGENTS_DIR = path.join(ROOT, '.claude', 'agents');
 // Static assets ship inside the Workflow repo, not the project.
 export const STATIC_DIR = path.resolve(__dirname, '..');
 
-export const VALID_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'];
+// Full lifecycle:
+//   todo  ->  queued  ->  in-progress  ->  verifying
+//                                            |  reject -> in-progress (attempt++)
+//                                            |  approve -> done (after commit+push)
+//   blocked is a side state any active status can park in.
+export const VALID_STATUSES = ['todo', 'queued', 'in-progress', 'verifying', 'blocked', 'done'];
 
 export const ALLOWED_TRANSITIONS = {
-  'todo':        new Set(['in-progress', 'blocked']),
-  'in-progress': new Set(['review', 'blocked', 'todo']),
-  'review':      new Set(['done', 'todo', 'in-progress']),
-  'blocked':     new Set(['todo', 'in-progress']),
+  'todo':        new Set(['queued', 'in-progress', 'blocked']),
+  'queued':      new Set(['in-progress', 'todo', 'blocked']),
+  'in-progress': new Set(['verifying', 'queued', 'blocked', 'todo']),
+  'verifying':   new Set(['in-progress', 'queued', 'done', 'todo']),
+  'blocked':     new Set(['todo', 'queued', 'in-progress']),
   'done':        new Set(['todo']),
 };
 

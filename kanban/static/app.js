@@ -17,7 +17,7 @@ function updateHeader() {
   const iter = STATE.board.iteration;
   const iterEl = document.getElementById('iter-name');
   if (!iter) iterEl.innerHTML = `<span style="color:var(--text-dim)">no active iteration</span>`;
-  else iterEl.textContent = `Iteration ${iter.id}`;
+  else iterEl.textContent = iter.track ? `${iter.track} · iter ${iter.id}` : `Iteration ${iter.id}`;
 
   const tracksBadge = document.getElementById('tracks-badge');
   const trackCount = (STATE.tracks.tracks || []).length;

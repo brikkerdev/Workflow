@@ -1,5 +1,5 @@
 ---
-description: "Разгрести .workflow/queue/ — для каждого триггера запустить background-агента и удалить триггер. Бесшовный аналог нескольких /dispatch подряд."
+description: "Разгрести .workflow/queue/ — для каждого триггера запустить background-агента. Никаких git-операций; commit/push делает сервер kanban после approve пользователя."
 allowed-tools: Read, Glob, Bash, Edit, Agent
 ---
 
@@ -8,33 +8,30 @@ allowed-tools: Read, Glob, Bash, Edit, Agent
 Шаги:
 1. Через Glob найди все `.workflow/queue/*.json`. Если пусто — скажи "Очередь пуста" и закончи.
 2. Для каждого триггер-файла (по порядку):
-   - Прочитай JSON. Достань `task_id`, `iteration`, `assignee`, `task_path`.
-   - Прочитай файл таска по `task_path`. Проверь:
-     - `status` всё ещё `todo` (не успел ли кто-то поменять). Если нет — пропусти, удали триггер, в логе пометь skip.
-     - `deps` всё ещё закрыты. Если нет — пропусти, удали триггер, в логе skip.
-     - `.claude/agents/<assignee>.md` существует. Если нет — пропусти, оставь триггер, в логе error.
-   - Поменяй `status` таска с `todo` на `in-progress` через Edit.
+   - Прочитай JSON. Достань `task_id`, `iteration`, `track`, `assignee`, `task_path`, `attempts`, `reason`, `rework_notes`.
+   - Проверь что `.claude/agents/<assignee>.md` существует. Если нет — оставь триггер, в логе error.
    - Запусти **background Agent** (`run_in_background: true`):
      - `subagent_type`: `assignee`
-     - `description`: первые 3-5 слов title таска
-     - `prompt`: содержимое таска + инструкция:
-       ```
-       Это таск из workflow-системы. Полный путь: <абсолютный путь>.
+     - `description`: `<task_id> · <attempt N>` или просто 3-5 слов title
+     - `prompt`: см. шаблон ниже. Сервер сам поставит claim → in-progress, удалит триггер; коммит/пуш сервер сделает после approve пользователя.
 
-       Прочитай содержимое таска ниже, выполни Acceptance criteria, затем:
-       1. Через Edit допиши в секцию `Notes` отчёт: что сделано, какие файлы тронуты, ключевые решения, что должен проверить пользователь.
-       2. Через Edit поменяй frontmatter `status` с `in-progress` на `review`.
-       3. Закоммить и запушить результат в git по шаблону `.workflow/templates/commit.md`:
-          - `git add -A` (gitignore сам отфильтрует Library/Logs/Temp).
-          - `git commit -m "<сообщение по шаблону>" --author="<твой assignee> <<assignee>@hashkill.local>"`.
-          - `git push origin main`. Если push падает — допиши в Notes "push failed: <reason>", работу не откатывай.
-          - Если файлы не менялись (только исследование) — пропусти коммит и push, в Notes напиши "no changes to commit".
+   Шаблон промпта:
+   ```
+   Это таск из workflow-системы. Файл: <абсолютный путь к task_path>.
+   Reason: <reason>. Attempts so far: <attempts>.
+   <если есть rework_notes: вставить блок>
 
-       === TASK FILE ===
-       <содержимое таска>
-       ```
-   - Удали триггер-файл через Bash (`rm <path>`).
-3. В конце выведи компактный лог: сколько dispatched / skipped / errored, какие task-id.
-4. Если хоть один dispatched — напомни пользователю: уведомления о завершении придут асинхронно, после них имеет смысл `/verify <id>`.
+   Используй MCP инструменты `workflow_*` (stdio MCP сервер уже подключён):
+   1. workflow_claim_task(task_id) — переведёт таск в in-progress.
+   2. workflow_get_task(task_id) — прочитай весь таск с подзадачами.
+   3. Распиши план как подзадачи: workflow_set_subtasks(task_id, [...]).
+   4. По мере выполнения отмечай: workflow_complete_subtask(task_id, index).
+   5. Заметки/решения: workflow_append_note(task_id, text).
+   6. Когда все Acceptance criteria выполнены: workflow_submit_for_verify(task_id, summary).
 
-Не запускай foreground-Agent. Все агенты — фоновые. Иначе сессия заблокируется на первом.
+   НЕ коммить и не пушь. НЕ делай git операций. Сервер kanban сделает commit+push сам после того как пользователь approve через UI.
+   ```
+3. В конце выведи компактный лог: сколько dispatched / errored, какие task-id.
+4. Напомни: уведомления о завершении придут асинхронно; verify проходит через UI кanban.
+
+Не запускай foreground-Agent. Все агенты — фоновые.

@@ -59,6 +59,7 @@
     <header>
       <span class="id" id="m-id"></span>
       <span class="title" id="m-title"></span>
+      <span class="attempts-badge" id="m-attempts"></span>
       <button class="close" id="m-close" aria-label="close">×</button>
     </header>
     <div class="body">
@@ -80,9 +81,12 @@
       <section><h3>Context</h3><div class="content" id="m-context"></div></section>
       <section><h3>Acceptance criteria</h3><div class="content" id="m-acceptance"></div></section>
       <section><h3>How to verify</h3><div class="content" id="m-verify"></div></section>
+      <section><h3>Subtasks <span class="hint">(agent progress)</span></h3><div id="m-subtasks"></div></section>
       <section><h3>Notes</h3><div class="content" id="m-notes"></div></section>
+      <section id="m-verify-panel" class="verify-panel"></section>
     </div>
     <footer>
+      <button id="m-verify-btn" class="primary" style="display:none">✓ Verify</button>
       <button id="m-dispatch" class="primary">▶ Start</button>
       <button id="m-save">Save</button>
       <button id="m-cancel">Close</button>

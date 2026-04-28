@@ -1,9 +1,10 @@
 // Shared state used by all views.
-const COLS = ['todo', 'in-progress', 'review', 'blocked', 'done'];
+const COLS = ['todo', 'queued', 'in-progress', 'verifying', 'blocked', 'done'];
 const COL_TITLE = {
   'todo':        'Backlog',
+  'queued':      'Queued',
   'in-progress': 'In progress',
-  'review':      'Review',
+  'verifying':   'Verifying',
   'blocked':     'Blocked',
   'done':        'Done',
 };

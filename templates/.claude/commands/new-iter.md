@@ -1,21 +1,21 @@
 ---
-description: "Создать новую итерацию из шаблона и сделать её активной. Спрашивает title/slug/цель."
-allowed-tools: Read, Glob, Write, Edit, Bash
+description: "Создать новую итерацию (всегда привязана к треку) и сделать её активной."
+allowed-tools: Read, Glob, Write, Edit, Bash, AskUserQuestion
 ---
 
 Создай новую итерацию.
 
 Шаги:
-1. Прочитай `.workflow/ACTIVE`. Если **не пусто** — спроси пользователя через AskUserQuestion: завершить текущую (move в `archive/` и очистить ACTIVE) или прервать. Без явного подтверждения не создавай новую.
-2. Просканируй `.workflow/iterations/` и найди наибольший id итерации. Новый id = max + 1, формат `###` (трёхзначный).
-3. Спроси пользователя:
-   - **slug** (короткое kebab-case имя, например `tooltips-mvp`)
+1. Прочитай `.workflow/ACTIVE`. Если **не пусто** — спроси через AskUserQuestion: завершить текущую (move в `archive/`, очистить ACTIVE) или прервать. Без явного подтверждения не создавай новую.
+2. Просканируй `.workflow/tracks/`. Если треков нет — стоп, скажи "сначала создай трек через /new-track". Итерация всегда живёт внутри трека.
+3. Спроси у пользователя через AskUserQuestion:
+   - **track** (slug одного из существующих треков из шага 2)
+   - **slug** итерации (kebab-case, например `tooltips-mvp`)
    - **цель итерации** (1-2 предложения)
-4. Создай папку `.workflow/iterations/<id>-<slug>/`.
-5. Прочитай `.workflow/templates/iteration.md`. Подставь `id`, `slug`, `started: <today YYYY-MM-DD>` и цель в раздел **Цель**.
-6. Запиши `README.md` итерации через Write.
-7. Создай пустую папку `tasks/` внутри итерации (через `Bash mkdir`).
-8. Запиши id итерации в `.workflow/ACTIVE` через Write (одна строка, без перевода).
-9. Сообщи: итерация создана, активна, добавляй таски через `/new-task`.
-
-Scope и Exit criteria в README пользователь заполнит сам или попросит отдельно — оставь TODO-плейсхолдеры из шаблона.
+4. Просканируй `.workflow/iterations/` и найди наибольший id. Новый id = max + 1, формат `###`.
+5. Создай папку `.workflow/iterations/<id>-<slug>/`.
+6. Прочитай `.workflow/templates/iteration.md`. Подставь `id`, `slug`, `track`, `started: <today>`, цель.
+7. Запиши `README.md` итерации через Write.
+8. Создай пустую `tasks/` внутри итерации.
+9. Запиши id в `.workflow/ACTIVE`.
+10. Сообщи: итерация создана внутри трека `<track>`, активна, добавляй таски через `/new-task`.

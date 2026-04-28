@@ -22,9 +22,22 @@ function renderCard(t) {
     : '';
 
   const queuedIds = new Set(((STATE.queue && STATE.queue.items) || []).map(q => q.task_id));
-  const isQueued = queuedIds.has(t.id);
+  const isQueued = queuedIds.has(t.id) || t.status === 'queued';
   const showStart = t.status === 'todo' && !isUser && !isQueued;
   const showStop = !isUser && (isQueued || t.status === 'in-progress');
+  const showVerify = t.status === 'verifying';
+
+  const subs = t._subtasks || [];
+  const subDone = subs.filter(s => s.checked).length;
+  const subTotal = subs.length;
+  const subHtml = subTotal
+    ? `<div class="subprog"><div class="subbar"><i style="width:${Math.round(subDone * 100 / subTotal)}%"></i></div><span class="subtxt">${subDone}/${subTotal}</span></div>`
+    : '';
+
+  const attempts = Number(t.attempts || 0);
+  const attemptsHtml = attempts > 0
+    ? `<span class="it attempts" title="rework attempts">×${attempts}</span>`
+    : '';
 
   card.innerHTML = `
     <div class="head">
@@ -32,12 +45,14 @@ function renderCard(t) {
       <span class="dot" data-s="${escapeHtml(t.status || 'todo')}"></span>
     </div>
     <div class="title">${escapeHtml(t.title || '')}</div>
+    ${subHtml}
     <div class="foot">
       <span class="agent ${isUser ? 'user' : ''}" style="color:${aColor}">${agentIcon(t.assignee || '', 11, 1.4)}${escapeHtml(t.assignee || '—')}</span>
-      <span class="meta">${depsHtml}${estHtml}</span>
+      <span class="meta">${attemptsHtml}${depsHtml}${estHtml}</span>
     </div>
     <div class="actions">
       ${showStart ? `<button class="start" ${canDispatch ? '' : 'disabled'} data-act="start">▶ Start</button>` : ''}
+      ${showVerify ? `<button class="verify" data-act="verify">✓ Verify</button>` : ''}
       ${showStop ? `<button class="stop" data-act="stop" title="${isQueued ? 'cancel queued dispatch' : 'revert to todo (background agent will not auto-stop)'}">■ Stop</button>` : ''}
       <button class="open" data-act="open">Open</button>
     </div>
@@ -56,6 +71,7 @@ function renderCard(t) {
       if (btn.dataset.act === 'open') openModal(t.id);
       else if (btn.dataset.act === 'start' && !btn.disabled) dispatchTask(t.id);
       else if (btn.dataset.act === 'stop') stopTask(t.id);
+      else if (btn.dataset.act === 'verify') openModal(t.id, { verify: true });
       return;
     }
     openModal(t.id);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   ROOT, WORKFLOW, TRACKS_DIR, ITERATIONS_DIR, AGENTS_DIR,
 } from './config.mjs';
-import { parseTask, serializeTask, extractSection } from './frontmatter.mjs';
+import { parseTask, serializeTask, extractSection, parseChecklist } from './frontmatter.mjs';
 
 export function exists(p) {
   try { fs.accessSync(p); return true; } catch { return false; }
@@ -25,6 +25,16 @@ export function iterDir(iterId) {
   return found ? path.join(ITERATIONS_DIR, found) : null;
 }
 
+// Read iteration README frontmatter to find which track it belongs to.
+export function iterTrack(iterId) {
+  const d = iterDir(iterId);
+  if (!d) return null;
+  const readme = path.join(d, 'README.md');
+  if (!exists(readme)) return null;
+  const [fm] = parseTask(readText(readme));
+  return fm?.track || null;
+}
+
 function readTasksIn(tasksDir, source) {
   const out = [];
   if (!exists(tasksDir)) return out;
@@ -42,6 +52,9 @@ function readTasksIn(tasksDir, source) {
     fm._verify = extractSection(body, 'How to verify');
     fm._notes = extractSection(body, 'Notes');
     fm._context = extractSection(body, 'Context');
+    fm._subtasks = parseChecklist(body, 'Subtasks');
+    fm._criteria = parseChecklist(body, 'Acceptance criteria');
+    if (fm.attempts == null) fm.attempts = 0;
     out.push(fm);
   }
   return out;
