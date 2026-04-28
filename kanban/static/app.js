@@ -10,6 +10,7 @@ function setTab(tab) {
   }
   if (tab === 'tracks') renderTracks();
   else if (tab === 'agents') renderAgents();
+  else if (tab === 'stats') renderStats();
   else renderBoard();
 }
 
@@ -454,6 +455,7 @@ function bindShortcuts() {
       case 'i': setTab('iteration'); break;
       case 't': setTab('tracks'); break;
       case 'a': setTab('agents'); break;
+      case 's': setTab('stats'); break;
       case 'q': e.preventDefault(); toggleQueueSheet(); break;
       case 'n': e.preventDefault(); openNewTaskForm(); break;
       case 'r': refresh(); break;

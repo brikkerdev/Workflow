@@ -18,6 +18,7 @@ import {
   handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
+  handleRecordStats, handleStatsAggregate,
 } from './lib/handlers.mjs';
 
 function matchAttachment(p) {
@@ -50,6 +51,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/queue') return handleQueueStatus(res);
       if (p === '/api/project') return handleProject(res);
       if (p === '/api/agents') return handleAgentsList(res);
+      if (p === '/api/stats') return handleStatsAggregate(res);
 
       let m;
       m = /^\/api\/agent\/([^/]+)$/.exec(p);
@@ -65,7 +67,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -74,6 +76,7 @@ const server = http.createServer(async (req, res) => {
         if (action === 'submit') return handleSubmitVerify(req, res, tid);
         if (action === 'note') return handleAppendNote(req, res, tid);
         if (action === 'subtasks') return handleSubtasks(req, res, tid);
+        if (action === 'stats') return handleRecordStats(req, res, tid);
       }
 
       // tracks

@@ -9,6 +9,7 @@ const SNAP_DIR = path.join(WORKFLOW, 'snapshots');
 function isIgnoredPath(p) {
   if (!p) return true;
   if (p.startsWith('.workflow/snapshots/')) return true;
+  if (p.startsWith('.workflow/stats/')) return true;
   return false;
 }
 

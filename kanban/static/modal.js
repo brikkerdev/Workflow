@@ -25,12 +25,19 @@ async function openModal(id, opts = {}) {
   document.getElementById('m-id').textContent = t.id;
   document.getElementById('m-title').textContent = t.title || '';
 
-  // attempts badge
+  // attempts + tokens badge
   const attEl = document.getElementById('m-attempts');
   const attempts = Number(t.attempts || 0);
+  const st = t._stats;
+  const parts = [];
+  if (attempts > 0) parts.push(`attempts: ${attempts}`);
+  if (st && (st.input || st.output)) {
+    const tot = (st.input || 0) + (st.output || 0);
+    parts.push(`tokens: ${typeof fmtTokShort === 'function' ? fmtTokShort(tot) : tot} (in ${st.input || 0} · out ${st.output || 0} · cache ${st.cache_read || 0})`);
+  }
   if (attEl) {
-    attEl.textContent = attempts > 0 ? `attempts: ${attempts}` : '';
-    attEl.style.display = attempts > 0 ? '' : 'none';
+    attEl.textContent = parts.join(' · ');
+    attEl.style.display = parts.length ? '' : 'none';
   }
 
   // selects

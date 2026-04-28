@@ -37,6 +37,7 @@ Commands:
   migrate [--apply]          Migrate legacy layout (.workflow/iterations/, global ACTIVE) to new track-as-timeline structure. Dry-run by default.
   check-queue                Print system-reminder if .workflow/queue/ has triggers.
   sync-subtasks              PostToolUse(TodoWrite) hook: mirror todos to task subtasks.
+  track-stats                Stop hook: sum agent token usage and POST to kanban.
   help                       Show this help.
 
 Project root resolution:
@@ -226,6 +227,14 @@ function cmdSyncSubtasks(project) {
   child.on('exit', code => process.exit(code ?? 0));
 }
 
+function cmdTrackStats(project) {
+  const env = { ...process.env, WORKFLOW_PROJECT: project };
+  const child = spawn(process.execPath, [path.join(KANBAN, 'track_stats.mjs')], {
+    env, stdio: ['inherit', 'inherit', 'inherit'],
+  });
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
 function copyDirRecursive(src, dst, opts = {}) {
   const { overwrite = false } = opts;
   fs.mkdirSync(dst, { recursive: true });
@@ -284,6 +293,7 @@ switch (sub) {
   case 'migrate':      cmdMigrate(project, rest); break;
   case 'check-queue':  cmdCheckQueue(project); break;
   case 'sync-subtasks': cmdSyncSubtasks(project); break;
+  case 'track-stats':  cmdTrackStats(project); break;
   case 'help':
   case '--help':
   case '-h':

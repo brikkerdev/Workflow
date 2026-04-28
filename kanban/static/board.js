@@ -1,5 +1,12 @@
 // Workflow — board renderer (design markup: column / card / accent-strip / chips).
 
+function fmtTokShort(n) {
+  if (!n) return '0';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
 function depsAllReady(t) {
   const ds = depStatus(t.deps || []);
   return ds.unmet.length === 0;
@@ -39,7 +46,12 @@ function renderCard(t, opts = {}) {
   const attemptsChip = attempts > 0
     ? `<span class="chip chip-dep-wait" title="rework attempts" style="color:var(--dot-blocked);border-color:rgba(239,68,68,0.30)">×${attempts}</span>`
     : '';
-  const metaInner = depChips + estChip + attemptsChip;
+  const stats = t._stats || null;
+  const tokTotal = stats ? (stats.input || 0) + (stats.output || 0) : 0;
+  const tokChip = tokTotal
+    ? `<span class="chip tok-badge" title="input ${stats.input} · output ${stats.output} · cache hit ${stats.cache_read}">${fmtTokShort(tokTotal)}</span>`
+    : '';
+  const metaInner = depChips + estChip + attemptsChip + tokChip;
 
   // attachments thumbs (up to 3)
   const atts = t._attachments || [];

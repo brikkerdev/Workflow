@@ -19,6 +19,7 @@ import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
+import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -50,6 +51,14 @@ function envelope(extra = {}) {
 // GET /api/board[?track=<slug>]
 // - track param: returns kanban for that track's active iteration
 // - no param: aggregate kanban across all currently-active iterations
+function attachStats(tasks) {
+  const totals = allTaskTotals();
+  for (const t of tasks) {
+    if (totals[t.id]) t._stats = totals[t.id];
+  }
+  return tasks;
+}
+
 export function handleBoard(res, query = {}) {
   const want = query.track || null;
   if (want) {
@@ -67,7 +76,7 @@ export function handleBoard(res, query = {}) {
         readme: iter.body, fm: iter.fm, track: want, status: iter.status,
       } : null,
       track: { slug: want, fm: t.fm, body: t.body },
-      tasks: iter ? listTasksInIteration(want, aid) : [],
+      tasks: iter ? attachStats(listTasksInIteration(want, aid)) : [],
     }));
   }
   // aggregate across active iterations
@@ -77,7 +86,7 @@ export function handleBoard(res, query = {}) {
   return sendJson(res, 200, envelope({
     iteration: null,
     actives: actives.map(it => ({ track: it.track, id: it.id, slug: it.slug, status: it.status })),
-    tasks,
+    tasks: attachStats(tasks),
   }));
 }
 
@@ -401,11 +410,13 @@ export function handleTask(res, tid, query = {}) {
   }
 
   // full — legacy shape for the kanban modal which expects everything
+  const totals = statsTotals(tid);
   sendJson(res, 200, {
     ...fm, _body: body, _path: rel(p),
     _attachments: listAttachments(tid) || [],
     _subtasks: subtasks, _criteria: criteria,
     _goal: goal, _context: context, _acceptance: acceptance, _verify: verify, _notes: notes,
+    ...(totals ? { _stats: totals } : {}),
   });
 }
 
@@ -847,4 +858,57 @@ export async function handleSubtasks(req, res, tid) {
   const newBody = replaceSection(body, 'Subtasks', lines.join('\n'));
   saveTask(p, fm, newBody);
   return sendJson(res, 200, { ok: true, count: items.length, done: items.filter(i => i.checked).length });
+}
+
+export async function handleRecordStats(req, res, tid) {
+  let payload;
+  try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const sessionId = String(payload.session_id || 'unknown');
+  const totals = recordRun(tid, sessionId, payload);
+  return sendJson(res, 200, { ok: true, totals: totals.totals });
+}
+
+export async function handleStatsAggregate(res) {
+  const tasks = listAllTasks();
+  const totalsByTid = allTaskTotals();
+  // Per-agent aggregate.
+  const byAgent = {};
+  let grand = { input: 0, output: 0, cache_read: 0, cache_creation: 0, runs: 0, tasks: 0 };
+  for (const t of tasks) {
+    const totals = totalsByTid[t.id];
+    if (!totals) continue;
+    const a = t.assignee || 'unknown';
+    if (!byAgent[a]) byAgent[a] = { agent: a, tasks: 0, done: 0, rework: 0, input: 0, output: 0, cache_read: 0, cache_creation: 0, runs: 0 };
+    const slot = byAgent[a];
+    slot.tasks += 1;
+    if (t.status === 'done') slot.done += 1;
+    if (Number(t.attempts || 0) > 0) slot.rework += 1;
+    slot.input += totals.input;
+    slot.output += totals.output;
+    slot.cache_read += totals.cache_read;
+    slot.cache_creation += totals.cache_creation;
+    slot.runs += totals.runs || 0;
+    grand.input += totals.input;
+    grand.output += totals.output;
+    grand.cache_read += totals.cache_read;
+    grand.cache_creation += totals.cache_creation;
+    grand.runs += totals.runs || 0;
+    grand.tasks += 1;
+  }
+  // Top tasks by total tokens.
+  const byTask = tasks
+    .filter(t => totalsByTid[t.id])
+    .map(t => ({
+      id: t.id, title: t.title, assignee: t.assignee, status: t.status,
+      attempts: Number(t.attempts || 0),
+      ...totalsByTid[t.id],
+    }))
+    .sort((a, b) => (b.input + b.output) - (a.input + a.output));
+
+  return sendJson(res, 200, {
+    grand,
+    by_agent: Object.values(byAgent).sort((a, b) => (b.input + b.output) - (a.input + a.output)),
+    by_task: byTask,
+  });
 }

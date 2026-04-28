@@ -1827,6 +1827,78 @@ select.input {
   background: var(--danger-soft); border-color: var(--dot-blocked);
 }
 
+/* ============ stats page ============ */
+.stats-page { padding: 28px 32px; max-width: 1200px; margin: 0 auto; }
+.stats-loading { padding: 40px; color: var(--fg-2); font-family: var(--font-mono); }
+.stats-grand {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0 28px;
+}
+.stats-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line-0);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.stats-card-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+.stats-card-val { font-family: var(--font-mono); font-size: 20px; font-weight: 600; color: var(--fg-0); }
+.stats-h2 { font-size: 14px; font-weight: 600; color: var(--fg-1); margin: 24px 0 10px; }
+.stats-table-wrap {
+  background: var(--bg-2);
+  border: 1px solid var(--line-0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.stats-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stats-table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line-0);
+}
+.stats-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-0);
+  color: var(--fg-1);
+}
+.stats-table td.num { font-family: var(--font-mono); text-align: right; }
+.stats-table td .muted { color: var(--fg-3); font-size: 11px; }
+.stats-table tr:last-child td { border-bottom: none; }
+.stats-task-row { cursor: pointer; }
+.stats-task-row:hover td { background: var(--bg-hover); }
+.agent-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+}
+
+/* token badge on board card */
+.tok-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-2);
+  background: var(--bg-3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+}
+
 /* ============ subtask progress ============ */
 .subprog {
   display: flex; align-items: center; gap: 8px;
