@@ -41,6 +41,47 @@ const CTYPES = {
   '.json': 'application/json; charset=utf-8',
 };
 
+// ─── SSE (Server-Sent Events) ───────────────────────────────────────────────
+// Single broadcast hub. Mutations call broadcastChange() which fans out a
+// minimal "change" event. Frontend EventSource(/api/events) reacts.
+
+const SSE_CLIENTS = new Set();
+
+export function attachSseClient(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(`retry: 3000\n\n`);
+  res.write(`event: hello\ndata: {"ok":true}\n\n`);
+
+  const client = { res };
+  SSE_CLIENTS.add(client);
+
+  // heartbeat every 25s to keep proxies happy
+  const ping = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { cleanup(); }
+  }, 25000);
+
+  const cleanup = () => {
+    clearInterval(ping);
+    SSE_CLIENTS.delete(client);
+    try { res.end(); } catch {}
+  };
+  req.on('close', cleanup);
+  req.on('error', cleanup);
+}
+
+export function broadcastChange(kind = 'change', payload = {}) {
+  const data = JSON.stringify({ kind, ...payload, ts: Date.now() });
+  for (const c of SSE_CLIENTS) {
+    try { c.res.write(`event: change\ndata: ${data}\n\n`); }
+    catch { SSE_CLIENTS.delete(c); }
+  }
+}
+
 export function serveStatic(res, name) {
   // Resolve and prevent path traversal
   const safe = path.normalize(name).replace(/^([/\\])+/, '');

@@ -5,9 +5,10 @@
 
 import http from 'node:http';
 import url from 'node:url';
+import fs from 'node:fs';
 import { ROOT, WORKFLOW } from './lib/config.mjs';
 import { exists } from './lib/repo.mjs';
-import { sendJson, serveStatic } from './lib/http.mjs';
+import { sendJson, serveStatic, attachSseClient, broadcastChange } from './lib/http.mjs';
 import {
   handleBoard, handleTracks, handleTrack,
   handleTrackCreate, handleTrackUpdate, handleTrackDelete,
@@ -30,10 +31,20 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname;
   process.stderr.write(`[kanban] ${req.method} ${p}\n`);
 
+  // Auto-broadcast change events after any successful non-GET request.
+  if (req.method !== 'GET' && req.method !== 'OPTIONS') {
+    res.on('finish', () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        broadcastChange('change', { method: req.method, path: p });
+      }
+    });
+  }
+
   try {
     if (req.method === 'GET') {
       if (p === '/') return serveStatic(res, 'index.html');
       if (p.startsWith('/static/')) return serveStatic(res, p.slice(1));
+      if (p === '/api/events') return attachSseClient(req, res);
       if (p === '/api/board') return handleBoard(res, u.query);
       if (p === '/api/tracks') return handleTracks(res);
       if (p === '/api/queue') return handleQueueStatus(res);
@@ -137,5 +148,22 @@ if (!exists(WORKFLOW)) {
 console.log(`[kanban] root: ${ROOT}`);
 console.log(`[kanban] open http://${args.host}:${args.port}`);
 server.listen(args.port, args.host);
+
+// Watch .workflow/ for external edits (agents writing task files etc.)
+try {
+  let wTimer = null;
+  fs.watch(WORKFLOW, { recursive: true, persistent: false }, (event, name) => {
+    if (!name) return;
+    // Ignore queue trigger churn — already covered by the API broadcast.
+    if (name.startsWith('queue/') || name.startsWith('queue\\')) return;
+    if (wTimer) return;
+    wTimer = setTimeout(() => {
+      wTimer = null;
+      broadcastChange('disk', { name: String(name) });
+    }, 200);
+  });
+} catch (e) {
+  process.stderr.write(`[kanban] fs.watch unavailable: ${e.message}\n`);
+}
 
 process.on('SIGINT', () => { console.log('\n[kanban] bye'); process.exit(0); });

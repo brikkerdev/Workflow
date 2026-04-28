@@ -71,7 +71,21 @@ function renderSkeleton() {
 }
 
 let FIRST_REFRESH = true;
-async function refresh() {
+let LAST_SIG = '';
+
+function dataSignature() {
+  const tasks = (STATE.board.tasks || []).map(t =>
+    `${t.id}|${t.status}|${t.assignee}|${t.estimate || ''}|${(t.deps || []).join(',')}|${t.attempts || 0}|${t.title || ''}`
+  ).sort().join('\n');
+  const tracks = (STATE.tracks.tracks || []).map(tr =>
+    `${tr.slug}|${tr.active || ''}|${(tr.iterations || []).map(it => `${it.id}:${it.status}:${it.task_count}:${it.done_count || 0}`).join(';')}`
+  ).sort().join('\n');
+  const queue = (STATE.queue.items || []).map(q => `${q.task_id}|${q.assignee || ''}`).sort().join('\n');
+  const iter = STATE.board.iteration ? `${STATE.board.iteration.id}|${STATE.board.iteration.track || ''}|${(STATE.board.iteration.readme || '').length}` : '';
+  return `${iter}\n${tasks}\n${tracks}\n${queue}`;
+}
+
+async function refresh(opts = {}) {
   if (FIRST_REFRESH) renderSkeleton();
   try {
     const boardUrl = STATE.boardTrack ? `/api/board?track=${encodeURIComponent(STATE.boardTrack)}` : '/api/board';
@@ -94,10 +108,18 @@ async function refresh() {
     return;
   }
   rebuildIndex();
+
+  // Skip DOM re-render when data signature is unchanged (poll no-op).
+  const sig = dataSignature();
+  const sameData = sig === LAST_SIG && !FIRST_REFRESH && !opts.force;
+  LAST_SIG = sig;
+
   updateHeader();
-  if (STATE.currentTab === 'tracks') renderTracks();
-  else if (STATE.currentTab === 'agents') renderAgents();
-  else renderBoard();
+  if (!sameData) {
+    if (STATE.currentTab === 'tracks') renderTracks();
+    else if (STATE.currentTab === 'agents') renderAgents();
+    else renderBoard();
+  }
   checkConflict();
   FIRST_REFRESH = false;
 }
@@ -574,8 +596,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   refresh();
-  setInterval(refresh, 5000);
+  bindEventStream();
+  // Slow fallback poll (in case SSE drops) — once per 30s.
+  setInterval(refresh, 30000);
 });
+
+// ============ Server-Sent Events ============
+let SSE = null;
+let SSE_REFRESH_TIMER = null;
+
+function bindEventStream() {
+  try {
+    SSE = new EventSource('/api/events');
+  } catch (e) { return; }
+
+  const debounceRefresh = () => {
+    clearTimeout(SSE_REFRESH_TIMER);
+    SSE_REFRESH_TIMER = setTimeout(() => refresh(), 120);
+  };
+
+  SSE.addEventListener('change', debounceRefresh);
+  SSE.addEventListener('error', () => {
+    // EventSource auto-reconnects per the `retry:` directive; nothing else needed.
+  });
+}
 
 window.refresh = refresh;
 window.setTab = setTab;

@@ -16,7 +16,7 @@ import {
 } from './repo.mjs';
 import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
 import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
-import { sendJson, readBody } from './http.mjs';
+import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 
 function projectName() {
