@@ -138,12 +138,39 @@ function renderIterRow(tr, it) {
   if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
   if (it.status !== 'done' && it.status !== 'abandoned') actBtns.push(`<button class="iconbtn" data-act="archive" title="Archive (close as done)">⌫</button>`);
 
+  const started = it.fm?.started || it.started || '';
+  const relTime = relativeDate(started);
+  const doneCount = (typeof it.done_count === 'number') ? it.done_count : null;
+
+  // Title prefers free-form fm.title, falls back to slug derivation
+  const title = it.title || it.fm?.title || '';
+  const sub = title && title !== it.slug ? title : '';
+
+  // Build meta segments (git-log-style: id · started · tasks · relative)
+  const meta = [];
+  if (started) meta.push(`<span title="started">${escapeHtml(started)}</span>`);
+  if (taskCount > 0) {
+    const taskLabel = doneCount != null
+      ? `${doneCount}/${taskCount} done`
+      : `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
+    meta.push(`<span>${taskLabel}</span>`);
+  } else {
+    meta.push(`<span class="muted">no tasks</span>`);
+  }
+  if (relTime) meta.push(`<span class="muted">${escapeHtml(relTime)}</span>`);
+
   row.innerHTML = `
-    <span class="iter-glyph">${ITER_GLYPHS[it.status] || '·'}</span>
-    <span class="iter-id">${escapeHtml(it.id)}</span>
-    <span class="iter-slug">${escapeHtml(it.slug)}</span>
-    <span class="iter-title">${escapeHtml(it.title || it.fm?.title || '')}${isActive ? '<span class="iter-active-badge">active</span>' : ''}</span>
-    <span class="iter-tasks">${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}</span>
+    <div class="iter-rail"><span class="iter-bullet">${ITER_GLYPHS[it.status] || '·'}</span></div>
+    <div class="iter-body">
+      <div class="iter-headline">
+        <span class="iter-id">${escapeHtml(it.id)}</span>
+        <span class="iter-slug">${escapeHtml(it.slug)}</span>
+        ${sub ? `<span class="iter-sep">·</span><span class="iter-title">${escapeHtml(sub)}</span>` : ''}
+        ${isActive ? `<span class="iter-active-badge">HEAD</span>` : ''}
+        ${it.status === 'abandoned' ? `<span class="iter-tag-abandoned">abandoned</span>` : ''}
+      </div>
+      <div class="iter-meta">${meta.join('<span class="iter-meta-sep">·</span>')}</div>
+    </div>
     <div class="iter-actions">${actBtns.join('')}</div>
   `;
 
@@ -244,7 +271,12 @@ async function openTrackForm(slug) {
 }
 
 async function archiveTrack(slug) {
-  if (!confirm(`Archive track "${slug}"? Moves to .workflow/archive/tracks/`)) return;
+  if (!await confirmModal({
+    title: 'Archive track',
+    message: `Archive track <b>${escapeHtml(slug)}</b>? Moves to <code>.workflow/archive/tracks/</code>.`,
+    confirmText: 'Archive',
+    danger: true,
+  })) return;
   try {
     const r = await api(`/api/track/${encodeURIComponent(slug)}`, { method: 'DELETE' });
     toast(`archived → ${r.archived_to}`, 'success');
@@ -314,7 +346,11 @@ async function activateIter(track, id) {
 }
 
 async function archiveIter(track, id) {
-  if (!confirm(`Close iter ${id} as done?`)) return;
+  if (!await confirmModal({
+    title: 'Close iteration',
+    message: `Close iter <b>${escapeHtml(id)}</b> in <b>${escapeHtml(track)}</b> as <b>done</b>?`,
+    confirmText: 'Close as done',
+  })) return;
   try {
     await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/archive`, {
       method: 'POST', body: JSON.stringify({ status: 'done' }),
@@ -325,7 +361,12 @@ async function archiveIter(track, id) {
 }
 
 async function deleteIter(track, id) {
-  if (!confirm(`Delete planned iter ${id}? (only allowed for empty planned iterations)`)) return;
+  if (!await confirmModal({
+    title: 'Delete iteration',
+    message: `Delete planned iter <b>${escapeHtml(id)}</b>?<br><span style="color:var(--fg-2);font-size:11px">Only allowed for empty planned iterations.</span>`,
+    confirmText: 'Delete',
+    danger: true,
+  })) return;
   try {
     await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}`, { method: 'DELETE' });
     toast(`iter ${id} deleted`, 'success');

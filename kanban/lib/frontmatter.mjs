@@ -89,14 +89,46 @@ export function appendToSection(body, name, addition) {
   return before + '\n' + addition.replace(/\s+$/, '') + '\n' + (after.startsWith('\n') ? after : (after ? '\n' + after : ''));
 }
 
-// Parse markdown checklist items in a section. Returns [{ text, checked, line }].
+// Parse markdown checklist items in a section. Returns [{ text, checked, details }].
+// Indented (or > -prefixed) lines following a `- [ ]` item are collected into
+// `details` until the next checkbox item or blank-line break.
 export function parseChecklist(body, sectionName) {
   const sec = extractSection(body, sectionName);
   if (!sec) return [];
+  const lines = sec.split('\n');
   const out = [];
-  for (const raw of sec.split('\n')) {
-    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/.exec(raw);
-    if (m) out.push({ checked: m[1].toLowerCase() === 'x', text: m[2] });
+  const itemRe = /^(\s*)[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = itemRe.exec(lines[i]);
+    if (!m) continue;
+    const baseIndent = m[1].length;
+    const item = { checked: m[2].toLowerCase() === 'x', text: m[3], details: '' };
+    const detailLines = [];
+    let j = i + 1;
+    while (j < lines.length) {
+      const ln = lines[j];
+      // stop at next checkbox at any indent level
+      if (itemRe.test(ln)) break;
+      // blank line is allowed once inside details
+      if (ln.trim() === '') {
+        // if a non-indented non-list line follows, stop; otherwise keep
+        const peek = lines[j + 1] || '';
+        if (peek === '' || /^[^\s]/.test(peek) && !itemRe.test(peek)) break;
+        detailLines.push('');
+        j++; continue;
+      }
+      // detail must be indented past the checkbox
+      const ind = ln.match(/^(\s*)/)[1].length;
+      if (ind > baseIndent) {
+        detailLines.push(ln.slice(baseIndent + 2)); // strip base indent + "- " width
+        j++;
+      } else {
+        break;
+      }
+    }
+    item.details = detailLines.join('\n').replace(/\s+$/, '');
+    out.push(item);
+    i = j - 1;
   }
   return out;
 }

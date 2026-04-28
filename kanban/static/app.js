@@ -387,6 +387,7 @@ function bindShortcuts() {
   document.addEventListener('keydown', e => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'Escape') {
+      if (document.getElementById('confirm-bg')?.classList.contains('open')) return; // handled in util.js
       if (document.getElementById('kbd-bg')?.classList.contains('open')) { closeKbdOverlay(); return; }
       if (document.getElementById('newtask-bg')?.classList.contains('open')) { closeNewTaskForm(); return; }
       if (document.getElementById('form-bg')?.classList.contains('open')) { closeFormModal(); return; }
@@ -561,6 +562,7 @@ document.addEventListener('DOMContentLoaded', () => {
   bindFormModal();
   bindNewTaskForm();
   bindConflictBanner();
+  bindConfirm();
   bindShortcuts();
 
   document.getElementById('queue-btn')?.addEventListener('click', toggleQueueSheet);

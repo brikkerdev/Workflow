@@ -65,7 +65,9 @@ async function openModal(id, opts = {}) {
   const verifyBtn = document.getElementById('m-verify-btn');
   if (verifyBtn) verifyBtn.style.display = 'none';
   MODAL_VERIFY_OPEN = t.status === 'verifying' || !!opts.verify;
-  MODAL_VERIFY_ITEMS = (t._criteria || []).map(c => ({ text: c.text, pass: null, note: '' }));
+  MODAL_VERIFY_ITEMS = (t._criteria || []).map(c => ({
+    text: c.text, details: c.details || '', pass: null, note: '', expanded: false,
+  }));
   renderVerifyPanel();
 
   // reset delete confirm
@@ -301,7 +303,12 @@ function renderAttachments() {
     item.querySelector('.attachment-x').addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!confirm(`Delete ${a.name}?`)) return;
+      if (!await confirmModal({
+        title: 'Delete attachment',
+        message: `Delete <b>${escapeHtml(a.name)}</b>?`,
+        confirmText: 'Delete',
+        danger: true,
+      })) return;
       try {
         await api(`/api/task/${MODAL_TASK.id}/attachments/${encodeURIComponent(a.name)}`, { method: 'DELETE' });
         MODAL_ATTACHMENTS = MODAL_ATTACHMENTS.filter(x => x.name !== a.name);
@@ -374,18 +381,23 @@ function renderVerifyPanel() {
   if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
 
   const items = MODAL_VERIFY_ITEMS;
-  const itemsHtml = items.map((it, i) => `
-    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''}">
+  const itemsHtml = items.map((it, i) => {
+    const hasDetails = it.details && it.details.trim();
+    const expanded = it.expanded;
+    return `
+    <div class="vrow ${it.pass === true ? 'ok' : it.pass === false ? 'fail' : ''} ${expanded ? 'expanded' : ''}">
       <div class="vrow-h">
+        ${hasDetails ? `<button class="vchev" data-vt="${i}" title="${expanded ? 'collapse' : 'how to test'}">${expanded ? '▾' : '▸'}</button>` : `<span class="vchev-spacer"></span>`}
         <span class="vtxt">${escapeHtml(it.text)}</span>
         <span class="vbtns">
           <button data-vi="${i}" data-vp="1" class="vp ${it.pass === true ? 'sel' : ''}">✓</button>
           <button data-vi="${i}" data-vp="0" class="vf ${it.pass === false ? 'sel' : ''}">✗</button>
         </span>
       </div>
+      ${hasDetails && expanded ? `<div class="vdetails">${renderMarkdown(it.details)}</div>` : ''}
       <textarea class="vnote" data-vn="${i}" placeholder="что не так / комментарий" ${it.pass !== false ? 'style="display:none"' : ''}>${escapeHtml(it.note || '')}</textarea>
     </div>
-  `).join('');
+  `; }).join('');
 
   const anyFail = items.some(i => i.pass === false);
   const allPass = items.length > 0 && items.every(i => i.pass === true);
@@ -407,6 +419,13 @@ function renderVerifyPanel() {
       const i = Number(btn.dataset.vi);
       const v = btn.dataset.vp === '1';
       MODAL_VERIFY_ITEMS[i].pass = v;
+      renderVerifyPanel();
+    });
+  });
+  panel.querySelectorAll('button[data-vt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.vt);
+      MODAL_VERIFY_ITEMS[i].expanded = !MODAL_VERIFY_ITEMS[i].expanded;
       renderVerifyPanel();
     });
   });

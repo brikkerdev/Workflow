@@ -117,6 +117,75 @@ function renderMarkdown(src) {
   return out.join('');
 }
 
+// Modal-based confirm. Returns Promise<boolean>.
+let CONFIRM_RESOLVE = null;
+function confirmModal(opts = {}) {
+  const message = typeof opts === 'string' ? opts : (opts.message || '');
+  const title = (typeof opts === 'object' && opts.title) || 'Confirm';
+  const okText = (typeof opts === 'object' && opts.confirmText) || 'Confirm';
+  const cancelText = (typeof opts === 'object' && opts.cancelText) || 'Cancel';
+  const danger = !!(typeof opts === 'object' && opts.danger);
+
+  const bg = document.getElementById('confirm-bg');
+  if (!bg) return Promise.resolve(false);
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-message').innerHTML = message;
+  const okBtn = document.getElementById('confirm-ok');
+  okBtn.textContent = okText;
+  okBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+  document.getElementById('confirm-cancel').textContent = cancelText;
+
+  return new Promise(resolve => {
+    CONFIRM_RESOLVE = resolve;
+    bg.classList.add('open');
+    setTimeout(() => okBtn.focus(), 50);
+  });
+}
+function closeConfirm(result) {
+  const bg = document.getElementById('confirm-bg');
+  if (bg) bg.classList.remove('open');
+  if (CONFIRM_RESOLVE) { CONFIRM_RESOLVE(result); CONFIRM_RESOLVE = null; }
+}
+function bindConfirm() {
+  document.getElementById('confirm-ok')?.addEventListener('click', () => closeConfirm(true));
+  document.getElementById('confirm-cancel')?.addEventListener('click', () => closeConfirm(false));
+  document.getElementById('confirm-close')?.addEventListener('click', () => closeConfirm(false));
+  document.getElementById('confirm-bg')?.addEventListener('click', e => {
+    if (e.target.id === 'confirm-bg') closeConfirm(false);
+  });
+  document.addEventListener('keydown', e => {
+    const bg = document.getElementById('confirm-bg');
+    if (!bg?.classList.contains('open')) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeConfirm(false); }
+    else if (e.key === 'Enter') { e.preventDefault(); closeConfirm(true); }
+  });
+}
+
+// Human-readable relative time. Accepts ISO date or YYYY-MM-DD.
+function relativeDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso);
+  if (isNaN(d.getTime())) return '';
+  const diff = Date.now() - d.getTime();
+  const sec = Math.round(diff / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const day = Math.round(h / 24);
+  if (day < 14) return `${day} day${day === 1 ? '' : 's'} ago`;
+  const w = Math.round(day / 7);
+  if (w < 8) return `${w} week${w === 1 ? '' : 's'} ago`;
+  const mo = Math.round(day / 30);
+  if (mo < 18) return `${mo} month${mo === 1 ? '' : 's'} ago`;
+  const y = Math.round(day / 365);
+  return `${y} year${y === 1 ? '' : 's'} ago`;
+}
+
 window.escapeHtml = escapeHtml;
 window.renderMarkdown = renderMarkdown;
+window.relativeDate = relativeDate;
 window.toast = toast;
+window.confirmModal = confirmModal;
+window.bindConfirm = bindConfirm;

@@ -86,10 +86,15 @@ export function handleTracks(res) {
   for (const slug of listTrackSlugs()) {
     const t = readTrack(slug);
     if (!t) continue;
-    const iters = listIterations(slug).map(it => ({
-      id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
-      task_count: listTasksInIteration(slug, it.id).length,
-    }));
+    const iters = listIterations(slug).map(it => {
+      const tasks = listTasksInIteration(slug, it.id);
+      return {
+        id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
+        fm: { title: it.fm.title, started: it.fm.started || '' },
+        task_count: tasks.length,
+        done_count: tasks.filter(x => x.status === 'done').length,
+      };
+    });
     out.push({
       slug, fm: t.fm, body: t.body, dir: rel(t.dir),
       active: trackActive(slug),

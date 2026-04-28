@@ -156,7 +156,12 @@ async function openAgentForm(slug) {
   if (!isNew) {
     setTimeout(() => {
       document.getElementById('ag-delete')?.addEventListener('click', async () => {
-        if (!confirm(`Delete agent "${slug}"? Removes .claude/agents/${slug}.md`)) return;
+        if (!await confirmModal({
+          title: 'Delete agent',
+          message: `Delete agent <b>${escapeHtml(slug)}</b>? Removes <code>.claude/agents/${escapeHtml(slug)}.md</code>.`,
+          confirmText: 'Delete',
+          danger: true,
+        })) return;
         try {
           await api(`/api/agent/${encodeURIComponent(slug)}`, { method: 'DELETE' });
           toast(`agent ${slug} deleted`, 'success');
