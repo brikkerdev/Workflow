@@ -58,22 +58,57 @@ async function api(method, pathname, body) {
 }
 
 // ---------- tool definitions ----------
+// Descriptions are kept terse on purpose — tools/list is sent every session.
+const idArg = { task_id: { type: 'string' } };
+
+const PROTOCOL = [
+  '1. workflow_claim_task(id) — sets in-progress, returns brief + rework notes if any.',
+  '2. workflow_set_subtasks(id, items) — lay out your plan once.',
+  '3. workflow_complete_subtask(id, index) — tick boxes as you go.',
+  '4. workflow_append_note(id, text) — record decisions/files touched.',
+  '5. workflow_submit_for_verify(id, summary) — when done.',
+  'Do NOT git commit/push. Server handles that on user approval.',
+].join('\n');
+
 const tools = [
   {
-    name: 'workflow_get_task',
-    description: 'Read full task: frontmatter, sections (Goal, Context, Acceptance criteria, How to verify, Notes), subtasks list, attempts.',
-    inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] },
-    handler: async ({ task_id }) => api('GET', `/api/task/${encodeURIComponent(task_id)}`),
+    name: 'workflow_claim_task',
+    description: 'Claim queued task → in-progress. Returns brief, protocol, last reject (if rework).',
+    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
+    handler: async ({ task_id }) => {
+      const claim = await api('POST', `/api/task/${encodeURIComponent(task_id)}/claim`, {});
+      const brief = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=brief`);
+      // If rework, fetch the most recent reject block from Notes.
+      let rework = null;
+      if (Number(brief.attempts) > 0) {
+        const r = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=notes`);
+        const m = /### Reject —[\s\S]*?(?=###|\s*$)/g.exec(r.notes || '');
+        if (m) rework = m[0].trim();
+      }
+      return { protocol: PROTOCOL, brief, rework, status: claim.status };
+    },
   },
   {
-    name: 'workflow_claim_task',
-    description: 'Mark a queued task as in-progress (call this first when you start working). Removes its dispatch trigger. Returns current attempts counter.',
-    inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] },
-    handler: async ({ task_id }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/claim`, {}),
+    name: 'workflow_get_brief',
+    description: 'Re-read minimal task: title/status/attempts/deps/goal/criteria/subtasks/verify.',
+    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
+    handler: async ({ task_id }) => api('GET', `/api/task/${encodeURIComponent(task_id)}?view=brief`),
+  },
+  {
+    name: 'workflow_get_notes',
+    description: 'Read full Notes section (history of submits, rejects, approvals). Use only when needed.',
+    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
+    handler: async ({ task_id }) => api('GET', `/api/task/${encodeURIComponent(task_id)}?view=notes`),
+  },
+  {
+    name: 'workflow_get_attachments',
+    description: 'List image attachments [{name,url}]. Empty if none.',
+    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
+    handler: async ({ task_id }) => api('GET', `/api/task/${encodeURIComponent(task_id)}/attachments`),
   },
   {
     name: 'workflow_set_subtasks',
-    description: 'Replace the Subtasks section with a fresh checklist. Use this once after claim to lay out your plan. Items: [{text, checked?}]',
+    description: 'Replace Subtasks checklist. items: [{text, checked?}].',
     inputSchema: {
       type: 'object',
       properties: {
@@ -86,26 +121,22 @@ const tools = [
   },
   {
     name: 'workflow_complete_subtask',
-    description: 'Mark subtask at given 0-based index as done. Reads current list, flips one checkbox, writes back.',
+    description: 'Tick subtask by 0-based index.',
     inputSchema: {
       type: 'object',
-      properties: {
-        task_id: { type: 'string' },
-        index: { type: 'integer', minimum: 0 },
-        checked: { type: 'boolean', description: 'default true' },
-      },
+      properties: { task_id: { type: 'string' }, index: { type: 'integer', minimum: 0 }, checked: { type: 'boolean' } },
       required: ['task_id', 'index'],
     },
     handler: async ({ task_id, index, checked = true }) => {
-      const t = await api('GET', `/api/task/${encodeURIComponent(task_id)}`);
-      const items = (t._subtasks || []).map((s, i) => ({ text: s.text, checked: i === index ? !!checked : !!s.checked }));
+      const t = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=brief`);
+      const items = (t.subtasks || []).map((s, i) => ({ text: s.text, checked: i === index ? !!checked : !!s.checked }));
       if (index >= items.length) throw new Error(`index ${index} out of range (have ${items.length})`);
       return api('POST', `/api/task/${encodeURIComponent(task_id)}/subtasks`, { items });
     },
   },
   {
     name: 'workflow_append_note',
-    description: 'Append free-form markdown to the task Notes section. Use for decisions, findings, files touched.',
+    description: 'Append markdown to Notes section.',
     inputSchema: {
       type: 'object',
       properties: { task_id: { type: 'string' }, text: { type: 'string' } },
@@ -115,28 +146,13 @@ const tools = [
   },
   {
     name: 'workflow_submit_for_verify',
-    description: 'Move task from in-progress to verifying so the user can run verification. Pass a brief summary that will be appended to Notes.',
+    description: 'in-progress → verifying. summary appended to Notes.',
     inputSchema: {
       type: 'object',
       properties: { task_id: { type: 'string' }, summary: { type: 'string' } },
       required: ['task_id'],
     },
     handler: async ({ task_id, summary }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/submit`, { summary: summary || '' }),
-  },
-  {
-    name: 'workflow_list_queue',
-    description: 'List pending dispatch triggers (rework + new). Each item: task_id, assignee, attempts, reason, rework_notes.',
-    inputSchema: { type: 'object', properties: {} },
-    handler: async () => api('GET', `/api/queue`),
-  },
-  {
-    name: 'workflow_project_info',
-    description: 'Project name and absolute root path.',
-    inputSchema: { type: 'object', properties: {} },
-    handler: async () => {
-      const p = await api('GET', `/api/project`).catch(() => ({}));
-      return { ...p, mcp_root: ROOT };
-    },
   },
 ];
 
@@ -171,7 +187,7 @@ async function handle(msg) {
       const out = await tool.handler(args);
       return send({
         jsonrpc: '2.0', id: msg.id,
-        result: { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] },
+        result: { content: [{ type: 'text', text: JSON.stringify(out) }] },
       });
     } catch (e) {
       return send({

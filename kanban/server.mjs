@@ -47,7 +47,7 @@ const server = http.createServer(async (req, res) => {
         if (att.name) return handleReadAttachment(res, att.tid, att.name);
         return handleListAttachments(res, att.tid);
       }
-      if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()));
+      if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
       let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks)$/.exec(p);

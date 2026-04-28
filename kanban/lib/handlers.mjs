@@ -14,7 +14,7 @@ import {
   listTasksInIteration, listAllTasks,
   listAgents, findTask, saveTask, depsSatisfied,
 } from './repo.mjs';
-import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist } from './frontmatter.mjs';
+import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
 import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
 import { sendJson, readBody } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
@@ -335,15 +335,61 @@ export async function handleTaskCreate(req, res, trackSlug, iterId) {
   sendJson(res, 200, { ok: true, id });
 }
 
-export function handleTask(res, tid) {
+// GET /api/task/:id[?view=full|slim|brief|notes]
+//
+// view=full   (default for backward compat) — frontmatter + body + parsed sections + attachments
+// view=slim   — frontmatter + non-empty parsed sections; no _body, no _attachments, no Notes
+// view=brief  — minimum needed by an agent to start work: id/title/status/attempts/deps/goal/criteria/subtasks
+// view=notes  — { notes } only
+export function handleTask(res, tid, query = {}) {
+  const view = query.view || 'full';
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
+
+  const goal       = extractSection(body, 'Goal');
+  const context    = extractSection(body, 'Context');
+  const acceptance = extractSection(body, 'Acceptance criteria');
+  const verify     = extractSection(body, 'How to verify');
+  const notes      = extractSection(body, 'Notes');
   const subtasks = parseChecklist(body, 'Subtasks');
   const criteria = parseChecklist(body, 'Acceptance criteria');
+
+  if (view === 'notes') return sendJson(res, 200, { id: fm.id, notes });
+
+  if (view === 'brief') {
+    const out = {
+      id: fm.id, title: fm.title, status: fm.status,
+      attempts: Number(fm.attempts || 0),
+      assignee: fm.assignee, deps: fm.deps || [],
+      iteration: fm.iteration || null, track: fm.track || null,
+      _path: rel(p),
+      goal, criteria, subtasks,
+      verify, // verification steps for the agent's awareness
+    };
+    if (context) out.context = context;
+    return sendJson(res, 200, out);
+  }
+
+  // slim — what the verify panel and most internal callers need
+  if (view === 'slim') {
+    const out = {
+      ...fm, _path: rel(p),
+      _subtasks: subtasks, _criteria: criteria,
+    };
+    if (goal) out._goal = goal;
+    if (context) out._context = context;
+    if (acceptance) out._acceptance = acceptance;
+    if (verify) out._verify = verify;
+    // attachments and full notes deliberately omitted
+    return sendJson(res, 200, out);
+  }
+
+  // full — legacy shape for the kanban modal which expects everything
   sendJson(res, 200, {
     ...fm, _body: body, _path: rel(p),
     _attachments: listAttachments(tid) || [],
     _subtasks: subtasks, _criteria: criteria,
+    _goal: goal, _context: context, _acceptance: acceptance, _verify: verify, _notes: notes,
   });
 }
 
