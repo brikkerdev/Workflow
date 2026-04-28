@@ -55,6 +55,15 @@
   </div>
 </header>
 
+<div class="banner warn" id="conflict-banner">
+  <span style="color:var(--dot-review)">⚠</span>
+  <span id="conflict-text">Task was modified on disk by another process.</span>
+  <div class="banner-actions">
+    <button class="btn btn-ghost" id="conflict-keep">Keep mine</button>
+    <button class="btn btn-primary" id="conflict-reload">Reload</button>
+  </div>
+</div>
+
 <main class="workspace view active" id="view-iteration"></main>
 <main class="workspace view" id="view-tracks"></main>
 <main class="workspace view" id="view-agents"></main>
@@ -154,6 +163,29 @@
   </div>
   <div class="sheet-body" id="queue-sheet-body"></div>
 </aside>
+
+<!-- New task form modal -->
+<div class="modal-bg" id="newtask-bg">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <span class="modal-title">New task</span>
+      <span class="modal-title-sep">·</span>
+      <span class="modal-title-slug" id="newtask-iter"></span>
+      <div class="modal-close"><button class="iconbtn" id="newtask-close" aria-label="close">×</button></div>
+    </div>
+    <div class="modal-body">
+      <div class="form-row"><label>Title</label><input class="input" id="nt-title" placeholder="What needs doing?"></div>
+      <div class="form-row"><label>Assignee</label><select class="input" id="nt-assignee"></select></div>
+      <div class="form-row"><label>Estimate</label>
+        <select class="input" id="nt-estimate"><option>S</option><option selected>M</option><option>L</option></select>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="nt-cancel">Cancel</button>
+      <button class="btn btn-primary" id="nt-save">Create</button>
+    </div>
+  </div>
+</div>
 
 <!-- Keyboard help overlay -->
 <div class="modal-bg" id="kbd-bg">

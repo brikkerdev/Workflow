@@ -10,6 +10,7 @@ function renderCard(t, opts = {}) {
   const running = t.status === 'in-progress' || t.status === 'queued';
   card.className = 'card' + (running ? ' is-running' : '');
   card.draggable = true;
+  card.tabIndex = 0;
   card.dataset.id = t.id;
   card.dataset.agent = t.assignee || 'user';
 

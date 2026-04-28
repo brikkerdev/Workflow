@@ -98,6 +98,7 @@ async function refresh() {
   if (STATE.currentTab === 'tracks') renderTracks();
   else if (STATE.currentTab === 'agents') renderAgents();
   else renderBoard();
+  checkConflict();
   FIRST_REFRESH = false;
 }
 
@@ -257,15 +258,23 @@ const KBD_GROUPS = [
     [['t'], 'Tracks'],
     [['a'], 'Agents'],
     [['q'], 'Toggle queue panel'],
-    [['Esc'], 'Close any panel/modal'],
+    [['Esc'], 'Close any panel/modal/focus'],
   ]],
-  ['Cards', [
+  ['Cards (iteration tab)', [
+    [['j'], 'Focus next card in column'],
+    [['k'], 'Focus previous card'],
+    [['h'], 'Focus first card in left column'],
+    [['l'], 'Focus first card in right column'],
+    [['1','-','5'], 'Move focused card to column N'],
     [['Enter'], 'Open card details'],
+    [['e'], 'Edit (alias for Enter)'],
     [['s'], 'Start dispatch (todo + deps ready)'],
     [['v'], 'Verify (verifying status)'],
+    [['n'], 'New task in active iteration'],
   ]],
   ['Theme', [
     [['T'], 'Toggle dark / light'],
+    [['D'], 'Toggle compact / comfortable'],
     [['r'], 'Reload from server'],
   ]],
 ];
@@ -309,18 +318,110 @@ function anyOverlayOpen() {
       || document.getElementById('kbd-bg')?.classList.contains('open');
 }
 
+// ============ card keyboard navigation ============
+function focusedCard() { return document.querySelector('.card.focused'); }
+function focusCard(card) {
+  if (!card) return;
+  for (const c of document.querySelectorAll('.card.focused')) c.classList.remove('focused');
+  card.classList.add('focused');
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function focusFirstCard() {
+  const c = document.querySelector('#view-iteration .card');
+  if (c) focusCard(c);
+}
+function moveFocus(dir) {
+  const cards = Array.from(document.querySelectorAll('#view-iteration .card'));
+  if (!cards.length) return;
+  const cur = focusedCard();
+  if (!cur) { focusCard(cards[0]); return; }
+
+  if (dir === 'j' || dir === 'k') {
+    const col = cur.parentElement;
+    const colCards = Array.from(col.querySelectorAll('.card'));
+    const i = colCards.indexOf(cur);
+    const next = dir === 'j' ? colCards[i + 1] : colCards[i - 1];
+    if (next) focusCard(next);
+  } else if (dir === 'h' || dir === 'l') {
+    const cols = Array.from(document.querySelectorAll('#view-iteration .column'));
+    const curCol = cur.closest('.column');
+    let idx = cols.indexOf(curCol);
+    const step = dir === 'l' ? 1 : -1;
+    for (let i = idx + step; i >= 0 && i < cols.length; i += step) {
+      const first = cols[i].querySelector('.card');
+      if (first) { focusCard(first); return; }
+    }
+  }
+}
+
+function moveCardToCol(card, colKey) {
+  const id = card.dataset.id;
+  const t = STATE.taskIndex[id];
+  if (!t) return;
+  const newStatus = statusForCol(colKey);
+  if (newStatus === t.status) return;
+  // Same dep guard as drop
+  if (!depsAllReady(t) && (colKey === 'in-progress' || colKey === 'review' || colKey === 'done')) {
+    toast(`${id}: unmet deps`, 'error');
+    return;
+  }
+  moveTask(id, newStatus);
+}
+
+async function actCard(card, action) {
+  const id = card?.dataset.id;
+  if (!id) return;
+  const t = STATE.taskIndex[id];
+  if (!t) return;
+  switch (action) {
+    case 'open':   openModal(id); break;
+    case 'verify': openModal(id, { verify: true }); break;
+    case 'start':
+      if (t.status === 'todo' && t.assignee !== 'user' && depsAllReady(t)) await dispatchTask(id);
+      else toast(`${id}: cannot start`, 'error');
+      break;
+  }
+}
+
 function bindShortcuts() {
   document.addEventListener('keydown', e => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'Escape') {
       if (document.getElementById('kbd-bg')?.classList.contains('open')) { closeKbdOverlay(); return; }
+      if (document.getElementById('newtask-bg')?.classList.contains('open')) { closeNewTaskForm(); return; }
       if (document.getElementById('form-bg')?.classList.contains('open')) { closeFormModal(); return; }
       if (document.getElementById('modal-bg')?.classList.contains('open')) { closeModal(); return; }
       if (document.getElementById('queue-sheet')?.classList.contains('open')) { closeQueueSheet(); return; }
+      const fc = focusedCard();
+      if (fc) { fc.classList.remove('focused'); return; }
       return;
     }
     if (isTyping(e)) return;
     if (anyOverlayOpen()) return;
+
+    // card-scoped first when on iteration tab
+    if (STATE.currentTab === 'iteration') {
+      const fc = focusedCard();
+      if (['j','k','h','l'].includes(e.key)) {
+        e.preventDefault();
+        if (!fc) focusFirstCard();
+        else moveFocus(e.key);
+        return;
+      }
+      if (fc) {
+        if (e.key >= '1' && e.key <= '5') {
+          e.preventDefault();
+          const col = COLUMNS[Number(e.key) - 1];
+          if (col) moveCardToCol(fc, col.key);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'o' || e.key === 'e') {
+          e.preventDefault(); actCard(fc, 'open'); return;
+        }
+        if (e.key === 's') { e.preventDefault(); actCard(fc, 'start'); return; }
+        if (e.key === 'v') { e.preventDefault(); actCard(fc, 'verify'); return; }
+      }
+    }
 
     switch (e.key) {
       case '?':
@@ -331,12 +432,116 @@ function bindShortcuts() {
       case 't': setTab('tracks'); break;
       case 'a': setTab('agents'); break;
       case 'q': e.preventDefault(); toggleQueueSheet(); break;
+      case 'n': e.preventDefault(); openNewTaskForm(); break;
       case 'r': refresh(); break;
       case 'T':
         applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
         break;
+      case 'D':
+        applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
+        break;
       default: break;
     }
+  });
+}
+
+// ============ new task form ============
+function activeTrackForNewTask() {
+  if (STATE.boardTrack && STATE.board.iteration) {
+    return { track: STATE.boardTrack, iter: STATE.board.iteration.id, slug: STATE.board.iteration.slug };
+  }
+  // fall back to first active iter from aggregate
+  const a = (STATE.board.actives || [])[0];
+  if (a) return { track: a.track, iter: a.id, slug: a.slug };
+  return null;
+}
+
+function openNewTaskForm() {
+  const ctx = activeTrackForNewTask();
+  if (!ctx) {
+    toast('no active iteration — pick a track or activate one', 'error');
+    return;
+  }
+  document.getElementById('newtask-iter').textContent = `${ctx.track} · ${ctx.iter} ${ctx.slug || ''}`;
+  const sel = document.getElementById('nt-assignee');
+  sel.innerHTML = '';
+  for (const name of ['user', ...(STATE.board.agents || [])]) {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  }
+  document.getElementById('nt-title').value = '';
+  document.getElementById('nt-estimate').value = 'M';
+  document.getElementById('newtask-bg').classList.add('open');
+  setTimeout(() => document.getElementById('nt-title')?.focus(), 50);
+}
+
+function closeNewTaskForm() {
+  document.getElementById('newtask-bg')?.classList.remove('open');
+}
+
+async function submitNewTask() {
+  const ctx = activeTrackForNewTask();
+  if (!ctx) return;
+  const title = document.getElementById('nt-title').value.trim();
+  if (!title) { toast('title required', 'error'); return; }
+  const assignee = document.getElementById('nt-assignee').value;
+  const estimate = document.getElementById('nt-estimate').value;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(ctx.track)}/iteration/${encodeURIComponent(ctx.iter)}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({ title, assignee, estimate, deps: [] }),
+    });
+    toast(`${r.id} created`, 'success');
+    closeNewTaskForm();
+    await refresh();
+  } catch (e) { toast(`create failed: ${e.message}`, 'error'); }
+}
+
+function bindNewTaskForm() {
+  document.getElementById('newtask-close')?.addEventListener('click', closeNewTaskForm);
+  document.getElementById('nt-cancel')?.addEventListener('click', closeNewTaskForm);
+  document.getElementById('nt-save')?.addEventListener('click', submitNewTask);
+  document.getElementById('newtask-bg')?.addEventListener('click', e => {
+    if (e.target.id === 'newtask-bg') closeNewTaskForm();
+  });
+  document.getElementById('nt-title')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submitNewTask(); }
+  });
+}
+
+// ============ conflict banner ============
+let CONFLICT_LATEST_TASK = null;
+
+function checkConflict() {
+  const banner = document.getElementById('conflict-banner');
+  if (!banner) return;
+  if (!MODAL_TASK || !document.getElementById('modal-bg')?.classList.contains('open')) {
+    banner.classList.remove('open');
+    CONFLICT_LATEST_TASK = null;
+    return;
+  }
+  const fresh = STATE.taskIndex[MODAL_TASK.id];
+  if (!fresh) { banner.classList.remove('open'); return; }
+  const sig = (t) => `${t.status}|${t.assignee}|${(t.deps || []).join(',')}|${t.estimate || ''}|${t.title || ''}|${t.attempts || 0}`;
+  if (sig(fresh) !== sig(MODAL_TASK)) {
+    document.getElementById('conflict-text').textContent =
+      `Task ${MODAL_TASK.id} was modified on disk while you were editing.`;
+    banner.classList.add('open');
+    CONFLICT_LATEST_TASK = fresh;
+  } else {
+    banner.classList.remove('open');
+    CONFLICT_LATEST_TASK = null;
+  }
+}
+
+function bindConflictBanner() {
+  document.getElementById('conflict-keep')?.addEventListener('click', () => {
+    document.getElementById('conflict-banner')?.classList.remove('open');
+  });
+  document.getElementById('conflict-reload')?.addEventListener('click', async () => {
+    document.getElementById('conflict-banner')?.classList.remove('open');
+    if (MODAL_TASK) await openModal(MODAL_TASK.id);
   });
 }
 
@@ -354,6 +559,8 @@ document.addEventListener('DOMContentLoaded', () => {
   bindChrome();
   bindModal();
   bindFormModal();
+  bindNewTaskForm();
+  bindConflictBanner();
   bindShortcuts();
 
   document.getElementById('queue-btn')?.addEventListener('click', toggleQueueSheet);
