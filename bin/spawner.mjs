@@ -40,7 +40,7 @@ function findLinuxTerminal() {
   return null;
 }
 
-export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'http://127.0.0.1:7777', resumeSessionId = null }) {
+export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'http://127.0.0.1:7777', resumeSessionId = null, model = null }) {
   const claudePath = findOnPath('claude');
   if (!claudePath) {
     logger.error('spawner', 'claude not found on PATH or known fallback dirs');
@@ -52,9 +52,17 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
   // The slash command itself reads identifiers from env (WORKFLOW_AGENT,
   // WORKFLOW_INSTANCE_ID), so no positional args are needed and we sidestep
   // any quoting/substitution surprises.
-  const claudeArgs = resumeSessionId
+  const baseArgs = resumeSessionId
     ? ['--resume', resumeSessionId]
     : ['/agent-loop'];
+  // Auto-approve all MCP tools for spawned instances so Sonnet (no auto-mode)
+  // doesn't stall on permission prompts inside the agent loop. Scoped to the
+  // spawn — interactive sessions outside the loop are unaffected.
+  const permArgs = ['--allowedTools', 'mcp__*'];
+  // `--model` honours the agent's declared tier (opus/sonnet/haiku or full id).
+  // Skipped when null so we don't override the user's default for unset agents.
+  const modelArgs = model ? ['--model', model] : [];
+  const claudeArgs = [...modelArgs, ...permArgs, ...baseArgs];
   const env = {
     ...process.env,
     WORKFLOW_PROJECT: project,
