@@ -207,3 +207,25 @@ export function depsSatisfied(deps) {
   }
   return [open.length === 0, open];
 }
+
+// Returns list of task IDs involved in a dependency cycle starting from taskId.
+// Empty array means no cycle.
+export function findDepCycle(taskId) {
+  const idx = new Map(listAllTasks().map(t => [t.id, t]));
+  const visited = new Set();
+  const stack = new Set();
+  function dfs(id) {
+    if (stack.has(id)) return [id];
+    if (visited.has(id)) return [];
+    visited.add(id);
+    stack.add(id);
+    const t = idx.get(id);
+    for (const dep of (t?.deps || [])) {
+      const cycle = dfs(dep);
+      if (cycle.length) { cycle.unshift(id); return cycle; }
+    }
+    stack.delete(id);
+    return [];
+  }
+  return dfs(taskId);
+}

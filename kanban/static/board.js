@@ -26,7 +26,7 @@ function renderCard(t, opts = {}) {
   const canStart = t.status === 'todo' && !isUser && ready;
   const queuedIds = new Set(((STATE.queue && STATE.queue.items) || []).map(q => q.task_id));
   const isQueued = queuedIds.has(t.id) || t.status === 'queued';
-  const showStart = t.status === 'todo' && !isUser && !isQueued;
+  const showStart = t.status === 'todo' && !isQueued;
   const showStop = !isUser && (isQueued || t.status === 'in-progress');
   const showVerify = t.status === 'verifying';
 
@@ -70,9 +70,9 @@ function renderCard(t, opts = {}) {
 
   // actions row
   const actionBtns = [];
-  if (showStart) actionBtns.push(`<button class="card-start" ${canStart ? '' : 'disabled'} data-act="start">▶ Start</button>`);
+  if (showStart) actionBtns.push(`<button class="card-start" ${ready ? '' : 'disabled'} data-act="start">▶ Start</button>`);
   if (showVerify) actionBtns.push(`<button class="card-verify" data-act="verify">✓ Verify</button>`);
-  if (showStop) actionBtns.push(`<button class="card-stop" data-act="stop" title="${isQueued ? 'cancel queued dispatch' : 'revert to todo'}">■ Stop</button>`);
+  if (showStop) actionBtns.push(`<button class="card-stop" data-act="stop" title="${isQueued ? 'cancel queued dispatch' : 'reset to todo'}">${isQueued ? '■ Stop' : '↺ Reset'}</button>`);
   const actionsHtml = actionBtns.length ? `<div class="card-actions">${actionBtns.join('')}</div>` : '';
 
   card.innerHTML = `
@@ -203,7 +203,71 @@ async function moveTask(id, newStatus) {
 }
 
 async function dispatchTask(id) {
+  const task = STATE.taskIndex[id];
+  const currentAssignee = task?.assignee || 'user';
+  const agents = STATE.board?.agents || [];
+
+  // If task already has a real agent assigned, dispatch directly.
+  if (currentAssignee !== 'user' && agents.includes(currentAssignee)) {
+    await _doDispatch(id, null);
+    return;
+  }
+
+  // Otherwise open agent picker.
+  await openAgentPicker(id, currentAssignee);
+}
+
+async function openAgentPicker(taskId, currentAssignee) {
+  const agents = STATE.board?.agents || [];
+  if (!agents.length) { toast('No agents configured', 'error'); return; }
+
+  // Fetch descriptions once
+  let details = [];
+  try { const r = await api('/api/agents'); details = r.agents || []; } catch {}
+  const bySlug = Object.fromEntries(details.map(a => [a.slug, a]));
+
+  let selected = agents.includes(currentAssignee) ? currentAssignee : agents[0];
+
+  const rows = agents.map(name => {
+    const det = bySlug[name];
+    const desc = det?.description || '';
+    const model = det?.fm?.model || 'inherit';
+    const color = agentColor(name);
+    return `<div class="picker-row${name === selected ? ' picker-selected' : ''}" data-agent="${escapeHtml(name)}" tabindex="0">
+      <span class="agent-swatch" style="background:${color};width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0"></span>
+      <span class="picker-name">${escapeHtml(name)}</span>
+      <span class="picker-model mono" style="font-size:0.75em;opacity:0.6">${escapeHtml(model)}</span>
+      <span class="picker-desc" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.75">${escapeHtml(desc)}</span>
+    </div>`;
+  }).join('');
+
+  const html = `<div class="agent-picker" style="display:flex;flex-direction:column;gap:4px">${rows}</div>`;
+
+  const task = STATE.taskIndex[taskId];
+  openFormModal(`Dispatch ${taskId} · ${task?.title || ''}`, html, async () => {
+    await _doDispatch(taskId, selected === currentAssignee ? null : selected);
+    closeFormModal();
+  }, { size: 'md', confirmText: '▶ Dispatch' });
+
+  // wire up selection after modal renders
+  setTimeout(() => {
+    document.querySelectorAll('.picker-row').forEach(row => {
+      const activate = () => {
+        document.querySelectorAll('.picker-row').forEach(r => r.classList.remove('picker-selected'));
+        row.classList.add('picker-selected');
+        selected = row.dataset.agent;
+      };
+      row.addEventListener('click', activate);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') activate(); });
+    });
+  }, 0);
+}
+
+async function _doDispatch(id, newAssignee) {
   try {
+    if (newAssignee) {
+      await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ assignee: newAssignee }) });
+    }
     const r = await api(`/api/task/${id}/dispatch`, { method: 'POST' });
     toast(`${id} queued · run /queue (queue: ${r.queue_size})`, 'success');
     await refresh();

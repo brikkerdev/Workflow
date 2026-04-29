@@ -502,12 +502,17 @@ async function saveModal() {
     estimate: document.getElementById('m-estimate').value,
     deps:     [...MODAL_DEPS],
   };
+  const saveBtn = document.getElementById('m-save');
+  if (saveBtn) saveBtn.disabled = true;
   try {
     await api(`/api/task/${MODAL_TASK.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
     toast(`${MODAL_TASK.id} saved`, 'success');
     closeModal();
     await refresh();
-  } catch (e) { toast(`save failed: ${e.message}`, 'error'); }
+  } catch (e) {
+    toast(`save failed: ${e.message}`, 'error');
+    if (saveBtn) saveBtn.disabled = false;
+  }
 }
 
 function bindModal() {
@@ -516,8 +521,8 @@ function bindModal() {
   document.getElementById('m-save').addEventListener('click', saveModal);
   document.getElementById('m-dispatch').addEventListener('click', async () => {
     if (!MODAL_TASK) return;
-    await dispatchTask(MODAL_TASK.id);
     closeModal();
+    await dispatchTask(MODAL_TASK.id);
   });
   document.getElementById('m-verify-btn').addEventListener('click', () => toggleVerify());
   document.getElementById('modal-bg').addEventListener('click', e => {

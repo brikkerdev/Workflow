@@ -402,9 +402,13 @@ function openFormModal(title, innerHtml, onSubmit, opts = {}) {
   document.getElementById('form-body').innerHTML = innerHtml;
   const m = document.querySelector('#form-bg .modal');
   if (m) {
+    m.classList.toggle('modal-sm',   opts.size === 'sm');
+    m.classList.toggle('modal-md',   opts.size === 'md');
     m.classList.toggle('modal-lg',   opts.size === 'lg' || !opts.size);
     m.classList.toggle('modal-xl',   opts.size === 'xl');
   }
+  const saveBtn = document.getElementById('form-save');
+  if (saveBtn) saveBtn.textContent = opts.confirmText || 'Save';
   document.getElementById('form-bg').classList.add('open');
 }
 

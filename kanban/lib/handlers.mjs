@@ -12,7 +12,7 @@ import {
   listIterations, findIteration, writeIterationReadme,
   activeIterations, highestTaskId, highestIterId,
   listTasksInIteration, listAllTasks,
-  listAgents, findTask, saveTask, depsSatisfied,
+  listAgents, findTask, saveTask, depsSatisfied, findDepCycle,
 } from './repo.mjs';
 import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
 import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
@@ -345,7 +345,8 @@ export async function handleTaskCreate(req, res, trackSlug, iterId) {
   const title = String(p.title || '').trim();
   if (!title) return sendJson(res, 400, { error: 'title required' });
   const assignee = String(p.assignee || 'user').trim();
-  const estimate = String(p.estimate || 'S').trim();
+  const estimate = String(p.estimate || 'M').trim().toUpperCase();
+  if (!['S', 'M', 'L'].includes(estimate)) return sendJson(res, 400, { error: 'estimate must be S, M, or L' });
   let deps = Array.isArray(p.deps) ? p.deps : (typeof p.deps === 'string' ? p.deps.split(',').map(s => s.trim()).filter(Boolean) : []);
   const id = 'T' + String(highestTaskId() + 1).padStart(3, '0');
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 40) || 'task';
@@ -605,6 +606,8 @@ export function handleDispatch(res, tid) {
   if (!listAgents().includes(assignee)) return sendJson(res, 409, { error: `agent '${assignee}' not registered in .claude/agents/` });
   const [ok, open] = depsSatisfied(fm.deps || []);
   if (!ok) return sendJson(res, 409, { error: `open deps: ${open.join(', ')}` });
+  const cycle = findDepCycle(tid);
+  if (cycle.length) return sendJson(res, 409, { error: `circular dependency: ${cycle.join(' → ')}` });
   fm.status = 'queued';
   saveTask(p, fm, body);
   writeTrigger(tid, fm, p, { reason: 'dispatch' });
@@ -754,6 +757,12 @@ function resolveTaskPaths(tid) {
   return [...ours];
 }
 
+function gitMsg(result) {
+  const raw = (result.stderr || result.stdout || '').trim();
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  return lines.pop() || '(no output)';
+}
+
 function runCommitPush(taskPath, fm, summary) {
   try {
     const tid = fm.id;
@@ -770,7 +779,7 @@ function runCommitPush(taskPath, fm, summary) {
 
     // Stage only this task's paths. `--all -- <pathspec>` covers add/modify/delete.
     const add = spawnSync('git', ['add', '--all', '--', ...paths], { cwd: ROOT, encoding: 'utf-8' });
-    if (add.status !== 0) return { error: `git add failed: ${add.stderr || add.stdout}` };
+    if (add.status !== 0) return { error: `git add failed: ${gitMsg(add)}` };
 
     const diff = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: ROOT });
     if (diff.status === 0) {
@@ -782,13 +791,13 @@ function runCommitPush(taskPath, fm, summary) {
     const args = ['commit', '-m', msg];
     if (author) { args.push(`--author=${author}`); }
     const c = spawnSync('git', args, { cwd: ROOT, encoding: 'utf-8' });
-    if (c.status !== 0) return { error: `git commit failed: ${c.stderr || c.stdout}` };
+    if (c.status !== 0) return { error: `git commit failed: ${gitMsg(c)}` };
 
     const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf-8' });
     const commit = (sha.stdout || '').trim();
 
     const push = spawnSync('git', ['push'], { cwd: ROOT, encoding: 'utf-8' });
-    if (push.status !== 0) return { error: `git push failed: ${push.stderr || push.stdout}`, commit };
+    if (push.status !== 0) return { error: `git push failed: ${gitMsg(push)}`, commit };
 
     deleteSnapshot(tid);
     return { commit };

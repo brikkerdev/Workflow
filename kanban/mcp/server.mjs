@@ -28,7 +28,7 @@ process.stdin.on('data', chunk => {
     if (!line) continue;
     let msg;
     try { msg = JSON.parse(line); }
-    catch { continue; }
+    catch (e) { log(`JSON parse error: ${e.message} | input: ${line.slice(0, 120)}`); continue; }
     handle(msg).catch(err => {
       log('handler error: ' + (err.stack || err));
       if (msg && msg.id != null) send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: String(err.message || err) } });
