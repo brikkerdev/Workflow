@@ -158,7 +158,7 @@ try {
   fs.watch(WORKFLOW, { recursive: true, persistent: false }, (event, name) => {
     if (!name) return;
     // Ignore queue trigger churn — already covered by the API broadcast.
-    if (name.startsWith('queue/') || name.startsWith('queue\\')) return;
+    if (name.startsWith('queue/')) return;
     if (wTimer) return;
     wTimer = setTimeout(() => {
       wTimer = null;
@@ -167,6 +167,9 @@ try {
   });
 } catch (e) {
   process.stderr.write(`[kanban] fs.watch unavailable: ${e.message}\n`);
+  process.stderr.write(`[kanban] live board updates disabled — refresh manually\n`);
 }
 
-process.on('SIGINT', () => { console.log('\n[kanban] bye'); process.exit(0); });
+function shutdown() { console.log('\n[kanban] bye'); process.exit(0); }
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

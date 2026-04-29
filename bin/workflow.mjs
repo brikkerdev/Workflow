@@ -6,6 +6,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import url from 'node:url';
 
@@ -14,9 +15,10 @@ const REPO = path.resolve(__dirname, '..');
 const KANBAN = path.join(REPO, 'kanban');
 
 function parseGlobalArgs(argv) {
-  const out = { project: null, rest: [] };
+  const out = { project: null, agents: null, rest: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project') out.project = path.resolve(argv[++i]);
+    else if (argv[i] === '--agents') out.agents = argv[++i];
     else out.rest.push(argv[i]);
   }
   if (!out.project) out.project = process.env.WORKFLOW_PROJECT
@@ -33,19 +35,29 @@ Usage:
 
 Commands:
   up [--port N] [--host H]   Start the local kanban web server.
-  init                       Scaffold .workflow/ + .claude/ in current project.
+  init [--agents <list>]     Scaffold .workflow/ + .claude/ in current project.
+  agents                     List available and installed agents.
   migrate [--apply]          Migrate legacy layout (.workflow/iterations/, global ACTIVE) to new track-as-timeline structure. Dry-run by default.
   check-queue                Print system-reminder if .workflow/queue/ has triggers.
   sync-subtasks              PostToolUse(TodoWrite) hook: mirror todos to task subtasks.
   track-stats                Stop hook: sum agent token usage and POST to kanban.
   help                       Show this help.
 
+Agent selection (--agents):
+  workflow init --agents developer,architect   install only these agents
+  workflow init --agents none                  install no agents
+  workflow init                                install all available agents
+
+Global agents (~/.workflow/agents/):
+  Place custom .md agent files there — they take priority over bundled agents
+  and are available to all projects.
+
 Project root resolution:
   --project <path>  >  $WORKFLOW_PROJECT  >  current directory
 
 Examples:
-  cd C:\\\\Unity\\ Games\\\\Hashkill && workflow up
-  workflow init --project C:\\\\Code\\\\new-thing
+  cd ~/projects/myapp && workflow up
+  workflow init --project ~/code/new-thing
 `);
 }
 
@@ -75,6 +87,21 @@ function findClaude() {
   return null;
 }
 
+function findLinuxTerminal() {
+  // Prefer the running terminal first (e.g. kitty, alacritty set $TERM_PROGRAM or $TERMINAL)
+  const hint = process.env.TERM_PROGRAM || process.env.TERMINAL || '';
+  const candidates = [hint, 'kitty', 'alacritty', 'wezterm', 'gnome-terminal', 'konsole', 'tilix', 'xterm'];
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const name of candidates) {
+    if (!name) continue;
+    for (const d of dirs) {
+      const p = path.join(d, name);
+      try { if (fs.statSync(p).isFile()) return name; } catch {}
+    }
+  }
+  return null;
+}
+
 function launchClaude(project) {
   if (!fs.existsSync(path.join(project, '.claude'))) {
     console.log('[workflow] no .claude/ in project — skipping Claude Code launch');
@@ -90,10 +117,33 @@ function launchClaude(project) {
     spawn('cmd.exe', ['/c', 'start', '""', '/D', project, claudePath], {
       cwd: project, detached: true, stdio: 'ignore', windowsHide: false,
     }).unref();
+  } else if (process.platform === 'linux') {
+    const term = findLinuxTerminal();
+    if (!term) {
+      console.log('[workflow] no terminal emulator found — skipping Claude Code launch');
+      console.log('[workflow] install kitty, alacritty, gnome-terminal, or set $TERMINAL');
+      return;
+    }
+    // Build exec args per terminal
+    let args;
+    if (term === 'kitty') {
+      args = ['-d', project, claudePath];
+    } else if (term === 'alacritty') {
+      args = ['--working-directory', project, '-e', claudePath];
+    } else if (term === 'wezterm') {
+      args = ['start', '--cwd', project, '--', claudePath];
+    } else if (term === 'gnome-terminal') {
+      args = ['--working-directory', project, '--', claudePath];
+    } else if (term === 'konsole') {
+      args = ['--workdir', project, '-e', claudePath];
+    } else {
+      // tilix, xterm, generic fallback
+      args = ['-e', claudePath];
+    }
+    spawn(term, args, { cwd: project, detached: true, stdio: 'ignore' }).unref();
   } else {
-    spawn(claudePath, [], {
-      cwd: project, detached: true, stdio: 'ignore',
-    }).unref();
+    // macOS: open a new Terminal window
+    spawn('open', ['-a', 'Terminal', project], { detached: true, stdio: 'ignore' }).unref();
   }
 }
 
@@ -247,7 +297,73 @@ function copyDirRecursive(src, dst, opts = {}) {
   }
 }
 
-function cmdInit(project) {
+// Build ordered list of agent source dirs: global (~/.workflow/agents/) first, then bundled.
+function agentSources() {
+  const sources = [];
+  const global = path.join(os.homedir(), '.workflow', 'agents');
+  if (fs.existsSync(global)) sources.push(global);
+  const bundled = path.join(REPO, 'templates', '.claude', 'agents');
+  if (fs.existsSync(bundled)) sources.push(bundled);
+  return sources;
+}
+
+// Extract `name:` field from YAML frontmatter, fall back to filename stem.
+function agentName(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    if (!text.startsWith('---')) return null;
+    const end = text.indexOf('\n---', 3);
+    if (end === -1) return null;
+    const m = text.slice(3, end).match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m);
+    return m ? m[1].trim() : null;
+  } catch { return null; }
+}
+
+// Returns Map<name, filePath> — global agents shadow bundled ones with the same name.
+function collectAgents() {
+  const map = new Map();
+  // Iterate in reverse so first source wins when we iterate later.
+  for (const dir of [...agentSources()].reverse()) {
+    for (const file of fs.readdirSync(dir).filter(n => n.endsWith('.md'))) {
+      const filePath = path.join(dir, file);
+      const name = agentName(filePath) || file.replace(/\.md$/, '');
+      map.set(name, filePath);
+    }
+  }
+  return map;
+}
+
+function installedAgents(project) {
+  const projectDir = path.join(project, '.claude', 'agents');
+  if (!fs.existsSync(projectDir)) return new Set();
+  return new Set(
+    fs.readdirSync(projectDir)
+      .filter(n => n.endsWith('.md'))
+      .map(n => agentName(path.join(projectDir, n)) || n.replace(/\.md$/, ''))
+  );
+}
+
+function cmdAgents(project) {
+  const all = collectAgents();
+  const installed = installedAgents(project);
+
+  console.log('\nAvailable agents (global ~/.workflow/agents/ + bundled):');
+  for (const [name] of all) {
+    const mark = installed.has(name) ? '[x]' : '[ ]';
+    const globalDir = path.join(os.homedir(), '.workflow', 'agents');
+    const src = all.get(name).startsWith(globalDir) ? '(global)' : '(bundled)';
+    console.log(`  ${mark} ${name.padEnd(20)} ${src}`);
+  }
+  const extra = [...installed].filter(n => !all.has(n));
+  if (extra.length) {
+    console.log('\nProject-only agents (not in any source dir):');
+    extra.forEach(n => console.log(`  [x] ${n}`));
+  }
+  console.log(`\nInstalled in project: ${installed.size ? [...installed].join(', ') : '(none)'}`);
+  console.log('To add: workflow init --agents <name1,name2>  (re-running init is safe)');
+}
+
+function cmdInit(project, agentsArg) {
   const tplRoot = path.join(REPO, 'templates');
   console.log(`[workflow] scaffolding into ${project}`);
 
@@ -266,14 +382,45 @@ function cmdInit(project) {
   const pf = path.join(wfTarget, 'PROJECT');
   if (!fs.existsSync(pf)) fs.writeFileSync(pf, path.basename(project) + '\n');
 
-  // .claude/agents — only seed if absent (user-customizable).
+  // .claude/agents — seeded from global + bundled sources, filtered by --agents if given.
   const claudeTarget = path.join(project, '.claude');
-  copyDirRecursive(path.join(tplRoot, '.claude', 'agents'), path.join(claudeTarget, 'agents'));
+  const agentsTarget = path.join(claudeTarget, 'agents');
+  fs.mkdirSync(agentsTarget, { recursive: true });
+
+  const allAgents = collectAgents();
+
+  let selected;
+  if (agentsArg === 'none') {
+    selected = [];
+  } else if (agentsArg === 'all' || !agentsArg) {
+    selected = [...allAgents.keys()];
+  } else {
+    selected = agentsArg.split(',').map(s => s.trim()).filter(Boolean);
+    const unknown = selected.filter(n => !allAgents.has(n));
+    if (unknown.length) {
+      console.error(`[workflow] unknown agents: ${unknown.join(', ')}`);
+      console.error(`[workflow] available: ${[...allAgents.keys()].join(', ')}`);
+      process.exit(1);
+    }
+  }
+
+  for (const name of selected) {
+    const src = allAgents.get(name);
+    const dst = path.join(agentsTarget, name + '.md');
+    if (!fs.existsSync(dst)) {
+      fs.copyFileSync(src, dst);
+      const globalDir = path.join(os.homedir(), '.workflow', 'agents');
+      console.log(`[workflow] agent: ${name} (${src.startsWith(globalDir) ? 'global' : 'bundled'})`);
+    }
+  }
+  if (!selected.length) {
+    console.log('[workflow] no agents installed (--agents none)');
+  }
+
   // settings.json — only if absent
   const settingsSrc = path.join(tplRoot, '.claude', 'settings.json');
   const settingsDst = path.join(claudeTarget, 'settings.json');
   if (fs.existsSync(settingsSrc) && !fs.existsSync(settingsDst)) {
-    fs.mkdirSync(claudeTarget, { recursive: true });
     fs.copyFileSync(settingsSrc, settingsDst);
   }
   // .claude/commands, .workflow/templates, .mcp.json — always synced.
@@ -285,11 +432,12 @@ function cmdInit(project) {
 }
 
 const [, , sub, ...rawRest] = process.argv;
-const { project, rest } = parseGlobalArgs(rawRest);
+const { project, agents, rest } = parseGlobalArgs(rawRest);
 
 switch (sub) {
   case 'up':           cmdUp(project, rest); break;
-  case 'init':         cmdInit(project); break;
+  case 'init':         cmdInit(project, agents); break;
+  case 'agents':       cmdAgents(project); break;
   case 'migrate':      cmdMigrate(project, rest); break;
   case 'check-queue':  cmdCheckQueue(project); break;
   case 'sync-subtasks': cmdSyncSubtasks(project); break;
