@@ -86,7 +86,10 @@ function postJSON(path, payload) {
 
 // Thresholds per Anthropic per-turn windows. When current session usage
 // exceeds the limit, mark the instance for clean respawn.
-const RESPAWN_THRESHOLD = parseInt(process.env.WORKFLOW_RESPAWN_AT || '150000', 10);
+// Sonnet's 200k context (or Opus 1M) gives plenty of room. We respawn near
+// the high-water mark, not at half, so cold-restart waste is rare. Override
+// via WORKFLOW_RESPAWN_AT.
+const RESPAWN_THRESHOLD = parseInt(process.env.WORKFLOW_RESPAWN_AT || '220000', 10);
 
 async function main() {
   const raw = await readStdin();

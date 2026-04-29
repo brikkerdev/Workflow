@@ -30,7 +30,7 @@ async function main() {
   process.stdin.on('data', () => {});
   await new Promise(r => process.stdin.on('end', r).on('error', r));
   if (!INSTANCE_ID) process.exit(0);
-  await post(`/api/instance/${encodeURIComponent(INSTANCE_ID)}/respawn`);
+  await post(`/api/instance/${encodeURIComponent(INSTANCE_ID)}/precompact`);
   process.exit(0);
 }
 

@@ -20,7 +20,8 @@ import {
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
-  handleInstanceHeartbeat, handleInstanceRespawn, handleAgentLoopDecide, handleNextTask,
+  handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
+  handleAgentLoopDecide, handleNextTask,
 } from './lib/handlers.mjs';
 import { startInstanceMonitor } from './lib/instance_monitor.mjs';
 import { startStatsPoller } from './lib/stats_poller.mjs';
@@ -96,12 +97,13 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/instance/spawn') return handleInstanceSpawn(req, res);
       if (p === '/api/agent-loop/decide') return handleAgentLoopDecide(req, res);
       if (p === '/api/next-task') return handleNextTask(req, res);
-      m = /^\/api\/instance\/([^/]+)\/(kill|heartbeat|respawn)$/.exec(p);
+      m = /^\/api\/instance\/([^/]+)\/(kill|heartbeat|respawn|precompact)$/.exec(p);
       if (m) {
         const id = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'kill') return handleInstanceKill(req, res, id);
         if (action === 'heartbeat') return handleInstanceHeartbeat(req, res, id);
         if (action === 'respawn') return handleInstanceRespawn(req, res, id);
+        if (action === 'precompact') return handleInstancePrecompact(req, res, id);
       }
 
       // iterations under a track

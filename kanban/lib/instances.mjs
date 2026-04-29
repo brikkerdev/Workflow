@@ -53,6 +53,7 @@ export function createInstance({ agent, terminalPid = null, claudePid = null, na
     tokens_used: 0,
     respawn_requested: false,
     exit_reason: null,
+    protocol_sent: false,
   };
   fs.writeFileSync(fileFor(id), JSON.stringify(data, null, 2), 'utf-8');
   return data;

@@ -854,7 +854,14 @@ export async function handleSubmitVerify(req, res, tid) {
   saveTask(p, fm, newBody);
   // If submitted by a known instance, release the task slot so its loop can pull next.
   const inst = payload.instance_id ? getInstance(payload.instance_id) : null;
-  if (inst && inst.current_task_id === tid) releaseTask(inst.id);
+  if (inst && inst.current_task_id === tid) {
+    releaseTask(inst.id);
+    // PreCompact happened mid-task and we deferred — now is the time to exit.
+    if (inst.respawn_after_submit) {
+      updateInstance(inst.id, { respawn_requested: true, respawn_after_submit: false });
+      markExiting(inst.id, 'deferred_precompact');
+    }
+  }
   return sendJson(res, 200, { ok: true, status: fm.status });
 }
 
@@ -980,6 +987,22 @@ export async function handleInstanceRespawn(req, res, id) {
   return sendJson(res, 200, { ok: true });
 }
 
+// PreCompact hook landing pad. If the instance is mid-task we DON'T tear it
+// down — Claude can /compact in place and finish. Only after submit (no
+// active task) the deferred respawn fires. If already idle when PreCompact
+// arrives, behave like a normal respawn.
+export async function handleInstancePrecompact(req, res, id) {
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 404, { error: 'instance not found' });
+  if (inst.current_task_id) {
+    updateInstance(id, { respawn_after_submit: true });
+    return sendJson(res, 200, { ok: true, deferred: true });
+  }
+  updateInstance(id, { respawn_requested: true });
+  markExiting(id, 'precompact');
+  return sendJson(res, 200, { ok: true, deferred: false });
+}
+
 // Stop hook calls this to decide whether to block (continue) or allow exit.
 // Contract:
 //   - Always block when there is a real next task — Claude must keep working.
@@ -1041,12 +1064,20 @@ export async function handleNextTask(req, res) {
     } catch {}
     return sendJson(res, r.code || 500, { error: r.error });
   }
-  if (instanceId) claimTaskForInstance(instanceId, trig.task_id);
+  let firstCall = false;
+  if (instanceId) {
+    const before = getInstance(instanceId);
+    if (before && !before.protocol_sent) {
+      firstCall = true;
+      updateInstance(instanceId, { protocol_sent: true });
+    }
+    claimTaskForInstance(instanceId, trig.task_id);
+  }
   return sendJson(res, 200, {
     task_id: trig.task_id,
     status: r.fm.status,
     attempts: r.fm.attempts || 0,
-    trigger: trig,
+    first_call: firstCall,
   });
 }
 

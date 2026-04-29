@@ -40,9 +40,12 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
   // When resuming a prior session: just `claude --resume <session_id>` — Claude
   // restores the conversation, no fresh /agent-loop prompt needed (it's already
   // in context). When starting fresh: run the slash command as the first turn.
+  // The slash command itself reads identifiers from env (WORKFLOW_AGENT,
+  // WORKFLOW_INSTANCE_ID), so no positional args are needed and we sidestep
+  // any quoting/substitution surprises.
   const claudeArgs = resumeSessionId
     ? ['--resume', resumeSessionId]
-    : [`/agent-loop ${agent} ${instanceId}`];
+    : ['/agent-loop'];
   const env = {
     ...process.env,
     WORKFLOW_PROJECT: project,

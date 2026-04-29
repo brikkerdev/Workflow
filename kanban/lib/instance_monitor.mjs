@@ -4,6 +4,9 @@
 //   - if respawn_requested, fire a fresh spawn for the same agent.
 //   - otherwise remove the dead instance record.
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   listInstances, getInstance, updateInstance, removeInstance,
   markDead, pidAlive,
@@ -13,6 +16,18 @@ import { writeTrigger, peekNextForAssignee } from './queue.mjs';
 import { deleteSnapshot } from './snapshot.mjs';
 import { broadcastChange } from './http.mjs';
 import { ROOT } from './config.mjs';
+
+// Claude Code writes a JSONL transcript per session at
+// ~/.claude/projects/<encoded-cwd>/<session_id>.jsonl. Its mtime advances on
+// every assistant message + tool result, so it's the most reliable liveness
+// signal we have on Windows where the spawned cmd.exe PID dies instantly.
+function transcriptMtime(sessionId) {
+  if (!sessionId) return 0;
+  const dir = path.join(os.homedir(), '.claude', 'projects', ROOT.replace(/[^A-Za-z0-9]/g, '-'));
+  const fp = path.join(dir, `${sessionId}.jsonl`);
+  try { return fs.statSync(fp).mtimeMs; }
+  catch { return 0; }
+}
 
 const TICK_MS = 5000;
 
@@ -94,10 +109,14 @@ async function tick() {
 
     if (inst.terminal_pid && pidAlive(inst.terminal_pid)) continue;
 
-    // On Windows the launcher PID dies near-instantly, so also trust a fresh
-    // heartbeat as proof of life regardless of PID.
-    const lastSeen = Date.now() - new Date(inst.last_seen || inst.started_at || 0).getTime();
-    if (lastSeen < 90_000) continue;
+    // The launcher PID is meaningless on Windows (cmd /c start exits at once).
+    // Trust ANY of: fresh heartbeat OR fresh transcript mtime — the latter
+    // catches long tool-heavy turns where Stop never fires.
+    const now = Date.now();
+    const lastSeen = now - new Date(inst.last_seen || inst.started_at || 0).getTime();
+    if (lastSeen < 5 * 60_000) continue;
+    const tMtime = transcriptMtime(inst.session_id);
+    if (tMtime && (now - tMtime) < 5 * 60_000) continue;
 
     const wantsRespawn = !!inst.respawn_requested;
 
@@ -124,6 +143,33 @@ async function tick() {
   }
 }
 
+// Server restart rehydration: instance records survive on disk, but their
+// last_seen / terminal_pid are stale relative to the new server process.
+// Walk the registry, peek at each instance's transcript file, and if it was
+// touched in the recent past — assume Claude is still alive and refresh
+// last_seen so the monitor doesn't immediately declare it dead.
+function rehydrateInstances() {
+  const now = Date.now();
+  const FRESH_WINDOW = 30 * 60_000; // 30 min — covers a long pause between turns
+  for (const inst of listInstances()) {
+    if (inst.status === 'dead') continue;
+    const mt = transcriptMtime(inst.session_id);
+    if (mt && (now - mt) < FRESH_WINDOW) {
+      // Reset last_seen to now so the standard tick gives this session a full
+      // 5-minute grace from this point. Drop stale terminal_pid so the
+      // monitor leans on transcript mtime (the launcher PID is meaningless
+      // after a server restart anyway).
+      updateInstance(inst.id, { last_seen: new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z'), terminal_pid: null });
+      process.stderr.write(`[monitor] rehydrated ${inst.id} (${inst.agent}) — transcript touched ${Math.round((now - mt) / 1000)}s ago\n`);
+    } else if (inst.session_id) {
+      // Transcript stale or missing — leave the record so the regular tick
+      // handles dead-detection (re-queue + respawn or prune).
+      process.stderr.write(`[monitor] stale ${inst.id} (${inst.agent}) — transcript ${mt ? Math.round((now - mt) / 1000) + 's old' : 'missing'}\n`);
+    }
+  }
+}
+
 export function startInstanceMonitor() {
+  rehydrateInstances();
   setInterval(() => { tick().catch(e => process.stderr.write(`[monitor] ${e.stack || e}\n`)); }, TICK_MS);
 }

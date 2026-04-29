@@ -59,6 +59,20 @@ async function api(method, pathname, body) {
   return json;
 }
 
+// Drop empty strings, empty arrays, and null/undefined fields. Saves a few
+// hundred tokens per task brief over a long auto-loop.
+function compactBrief(b) {
+  if (!b || typeof b !== 'object') return b;
+  const out = {};
+  for (const [k, v] of Object.entries(b)) {
+    if (v == null) continue;
+    if (typeof v === 'string' && !v.trim()) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 // ---------- tool definitions ----------
 // Descriptions are kept terse on purpose — tools/list is sent every session.
 const idArg = { task_id: { type: 'string' } };
@@ -90,15 +104,15 @@ const tools = [
     inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
     handler: async ({ task_id }) => {
       const claim = await api('POST', `/api/task/${encodeURIComponent(task_id)}/claim`, {});
-      const brief = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=brief`);
-      // If rework, fetch the most recent reject block from Notes.
-      let rework = null;
+      const briefRaw = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=brief`);
+      const brief = compactBrief(briefRaw);
+      const out = { protocol: PROTOCOL, brief, status: claim.status };
       if (Number(brief.attempts) > 0) {
         const r = await api('GET', `/api/task/${encodeURIComponent(task_id)}?view=notes`);
         const m = /### Reject —[\s\S]*?(?=###|\s*$)/g.exec(r.notes || '');
-        if (m) rework = m[0].trim();
+        if (m) out.rework = m[0].trim();
       }
-      return { protocol: PROTOCOL, brief, rework, status: claim.status };
+      return out;
     },
   },
   {
@@ -185,15 +199,17 @@ const tools = [
       if (!a) throw new Error('assignee required (no WORKFLOW_AGENT in env)');
       const r = await api('POST', '/api/next-task', { assignee: a, instance_id: i });
       if (r.empty) return { empty: true };
-      // Fetch brief so the agent can start without an extra round-trip.
-      const brief = await api('GET', `/api/task/${encodeURIComponent(r.task_id)}?view=brief`);
-      let rework = null;
+      const briefRaw = await api('GET', `/api/task/${encodeURIComponent(r.task_id)}?view=brief`);
+      const brief = compactBrief(briefRaw);
+      const out = { task_id: r.task_id, status: r.status, attempts: r.attempts, brief };
       if (Number(brief.attempts) > 0) {
         const notes = await api('GET', `/api/task/${encodeURIComponent(r.task_id)}?view=notes`);
         const m = /### Reject —[\s\S]*?(?=###|\s*$)/g.exec(notes.notes || '');
-        if (m) rework = m[0].trim();
+        if (m) out.rework = m[0].trim();
       }
-      return { task_id: r.task_id, status: r.status, attempts: r.attempts, brief, rework, protocol: PROTOCOL };
+      // Protocol is static; ship it only on the first task per instance.
+      if (r.first_call) out.protocol = PROTOCOL;
+      return out;
     },
   },
 ];
