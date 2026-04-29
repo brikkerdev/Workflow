@@ -8,6 +8,7 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createLogger } from '../kanban/lib/logger.mjs';
 const logger = createLogger('server');
@@ -62,7 +63,7 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
   // `--model` honours the agent's declared tier (opus/sonnet/haiku or full id).
   // Skipped when null so we don't override the user's default for unset agents.
   const modelArgs = model ? ['--model', model] : [];
-  const claudeArgs = [...modelArgs, ...permArgs, ...baseArgs];
+  const claudeArgs = [...baseArgs, ...modelArgs, ...permArgs];
   const env = {
     ...process.env,
     WORKFLOW_PROJECT: project,
@@ -73,12 +74,32 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
 
   if (process.platform === 'win32') {
     const title = `workflow:${agent}:${instanceId}`;
+    // Write a temp .cmd launcher so cmd.exe start never sees /agent-loop as a
+    // switch. The batch file is deleted after the process starts.
+    const tmpDir = os.tmpdir();
+    const tmpScript = path.join(tmpDir, `workflow-launch-${instanceId}.cmd`);
+    const envLines = Object.entries({
+      WORKFLOW_PROJECT: project,
+      WORKFLOW_INSTANCE_ID: instanceId,
+      WORKFLOW_AGENT: agent,
+      WORKFLOW_KANBAN: kanbanUrl,
+    }).map(([k, v]) => `SET "${k}=${v}"`).join('\r\n');
+    // Wrap each arg in quotes, escaping any inner quotes.
+    const argStr = claudeArgs.map(a => `"${a.replace(/"/g, '""')}"`).join(' ');
+    const scriptContent = `@echo off\r\n${envLines}\r\ncd /D "${project}"\r\n"${claudePath}" ${argStr}\r\n`;
+    fs.writeFileSync(tmpScript, scriptContent, 'utf8');
+    // Use windowsVerbatimArguments so we own the exact command string — avoids
+    // Node.js double-quoting the title or tmpScript path.
+    const quotedProject = `"${project}"`;
+    const quotedScript = `"${tmpScript}"`;
     const child = spawn(
       'cmd.exe',
-      ['/c', 'start', `"${title}"`, '/D', project, claudePath, ...claudeArgs],
-      { cwd: project, detached: true, stdio: 'ignore', env, windowsHide: false },
+      [`/c start "${title}" /D ${quotedProject} cmd.exe /c ${quotedScript}`],
+      { cwd: project, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true },
     );
     child.unref();
+    // Clean up temp script after a short delay.
+    setTimeout(() => { try { fs.unlinkSync(tmpScript); } catch {} }, 5000);
     return { terminalPid: child.pid };
   }
 
