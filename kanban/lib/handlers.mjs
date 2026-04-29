@@ -15,7 +15,11 @@ import {
   listAgents, findTask, saveTask, depsSatisfied, findDepCycle,
 } from './repo.mjs';
 import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
-import { queueCount, queueItems, writeTrigger, deleteTrigger } from './queue.mjs';
+import { queueCount, queueItems, writeTrigger, deleteTrigger, popNextForAssignee, peekNextForAssignee } from './queue.mjs';
+import {
+  createInstance, getInstance, listInstances, updateInstance,
+  removeInstance, markExiting, markDead, claimTaskForInstance, releaseTask, pidAlive,
+} from './instances.mjs';
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
@@ -808,22 +812,28 @@ function runCommitPush(taskPath, fm, summary) {
 
 // ---------- Agent-facing endpoints (also reachable via MCP) ----------
 
-export async function handleClaim(req, res, tid) {
+// Internal helper — performs the claim transition + snapshot. Does not write HTTP.
+// Returns { ok, fm, error?, code? }.
+export function _claimTaskInternal(tid) {
   const [p, fm, body] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  if (!p) return { ok: false, code: 404, error: 'task not found' };
   if (fm.status !== 'queued' && fm.status !== 'in-progress') {
-    return sendJson(res, 409, { error: `can claim only queued, current: ${fm.status}` });
+    return { ok: false, code: 409, error: `can claim only queued, current: ${fm.status}` };
   }
   const wasInProgress = fm.status === 'in-progress';
   fm.status = 'in-progress';
   saveTask(p, fm, body);
-  // Snapshot dirty repo state on first claim, so commit can scope to this task.
   if (!wasInProgress && !loadSnapshot(tid)) {
     try { captureSnapshot(tid); } catch (e) { process.stderr.write(`[kanban] snapshot failed for ${tid}: ${e.message}\n`); }
   }
-  // remove queue trigger if present
   deleteTrigger(tid);
-  return sendJson(res, 200, { ok: true, task_id: tid, status: fm.status, attempts: fm.attempts || 0 });
+  return { ok: true, fm, path: p, body };
+}
+
+export async function handleClaim(req, res, tid) {
+  const r = _claimTaskInternal(tid);
+  if (!r.ok) return sendJson(res, r.code, { error: r.error });
+  return sendJson(res, 200, { ok: true, task_id: tid, status: r.fm.status, attempts: r.fm.attempts || 0 });
 }
 
 export async function handleSubmitVerify(req, res, tid) {
@@ -842,6 +852,9 @@ export async function handleSubmitVerify(req, res, tid) {
   }
   fm.status = 'verifying';
   saveTask(p, fm, newBody);
+  // If submitted by a known instance, release the task slot so its loop can pull next.
+  const inst = payload.instance_id ? getInstance(payload.instance_id) : null;
+  if (inst && inst.current_task_id === tid) releaseTask(inst.id);
   return sendJson(res, 200, { ok: true, status: fm.status });
 }
 
@@ -879,6 +892,161 @@ export async function handleRecordStats(req, res, tid) {
   const sessionId = String(payload.session_id || 'unknown');
   const totals = recordRun(tid, sessionId, payload);
   return sendJson(res, 200, { ok: true, totals: totals.totals });
+}
+
+// ---------- Instance API ----------
+
+// Lazy spawnInstance import — avoids pulling node:child_process into every handler load.
+let _spawnInstance = null;
+async function getSpawner() {
+  if (_spawnInstance) return _spawnInstance;
+  const mod = await import('../../bin/spawner.mjs');
+  _spawnInstance = mod.spawnInstance;
+  return _spawnInstance;
+}
+
+export function handleInstancesList(res) {
+  const all = listInstances();
+  return sendJson(res, 200, { instances: all });
+}
+
+export function handleInstanceGet(res, id) {
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 404, { error: 'instance not found' });
+  // Augment with live PID check (cheap).
+  return sendJson(res, 200, { ...inst, alive: pidAlive(inst.terminal_pid) });
+}
+
+export async function handleInstanceSpawn(req, res) {
+  let payload; try { payload = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const agent = String(payload.agent || '').trim();
+  if (!agent) return sendJson(res, 400, { error: 'agent required' });
+  if (!listAgents().includes(agent)) return sendJson(res, 404, { error: `agent '${agent}' not in .claude/agents/` });
+  const inst = createInstance({ agent });
+  try {
+    const spawner = await getSpawner();
+    const { terminalPid } = await spawner({ agent, instanceId: inst.id, project: ROOT });
+    updateInstance(inst.id, { terminal_pid: terminalPid, status: 'starting' });
+  } catch (e) {
+    removeInstance(inst.id);
+    return sendJson(res, 500, { error: `spawn failed: ${e.message}` });
+  }
+  broadcastChange('instances', { kind: 'spawn', instance_id: inst.id });
+  return sendJson(res, 200, { ok: true, instance_id: inst.id });
+}
+
+export async function handleInstanceKill(req, res, id) {
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 404, { error: 'instance not found' });
+  // Re-queue any in-flight task before killing.
+  if (inst.current_task_id) {
+    const [p, fm, body] = findTask(inst.current_task_id);
+    if (p && (fm.status === 'in-progress' || fm.status === 'verifying')) {
+      fm.status = 'queued';
+      fm.attempts = Number(fm.attempts || 0) + 1;
+      saveTask(p, fm, body);
+      writeTrigger(inst.current_task_id, fm, p, { reason: 'instance_killed' });
+      try { deleteSnapshot(inst.current_task_id); } catch {}
+    }
+  }
+  if (inst.terminal_pid) {
+    try { process.kill(inst.terminal_pid); } catch {}
+  }
+  markDead(id, 'killed');
+  removeInstance(id);
+  broadcastChange('instances', { kind: 'kill', instance_id: id });
+  return sendJson(res, 200, { ok: true });
+}
+
+export async function handleInstanceHeartbeat(req, res, id) {
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 404, { error: 'instance not found' });
+  const patch = {};
+  if ('tokens_used' in payload) patch.tokens_used = Number(payload.tokens_used) || 0;
+  if ('claude_pid' in payload) patch.claude_pid = Number(payload.claude_pid) || null;
+  if ('status' in payload && payload.status) patch.status = String(payload.status);
+  if ('current_task_id' in payload) patch.current_task_id = payload.current_task_id || null;
+  const next = updateInstance(id, patch);
+  return sendJson(res, 200, { ok: true, instance: next });
+}
+
+export async function handleInstanceRespawn(req, res, id) {
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 404, { error: 'instance not found' });
+  updateInstance(id, { respawn_requested: true });
+  markExiting(id, 'respawn_requested');
+  return sendJson(res, 200, { ok: true });
+}
+
+// Stop hook calls this to decide whether to block (continue) or allow exit.
+// Contract:
+//   - Always block when there is a real next task — Claude must keep working.
+//   - On empty queue: block exactly once (Claude double-checks), then on the
+//     repeat firing (`stop_hook_active=true`) allow exit and mark the instance
+//     `idle_exited`. The monitor will respawn the instance when work shows up.
+//   - On exiting / respawn_requested: allow exit.
+export async function handleAgentLoopDecide(req, res) {
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const id = String(payload.instance_id || '');
+  const stopHookActive = !!payload.stop_hook_active;
+  const inst = getInstance(id);
+  if (!inst) return sendJson(res, 200, { decision: 'allow', reason: 'no instance — exit' });
+  if (inst.status === 'exiting' || inst.respawn_requested) {
+    return sendJson(res, 200, { decision: 'allow', reason: inst.exit_reason || 'exiting' });
+  }
+  const next = peekNextForAssignee(inst.agent);
+  if (next) {
+    updateInstance(id, { status: 'working' });
+    return sendJson(res, 200, {
+      decision: 'block',
+      reason: `Take next workflow task: ${next.task_id}. Call workflow_next_task(assignee="${inst.agent}", instance_id="${inst.id}") to claim and start working.`,
+      next_task_id: next.task_id,
+    });
+  }
+  // Empty queue.
+  if (stopHookActive) {
+    // Claude already came back once after our block. Respect the loop guard:
+    // mark the instance as cleanly exited and let it stop. Monitor will respawn
+    // a fresh session when new tasks arrive for this agent.
+    updateInstance(id, { status: 'idle_exited', exit_reason: 'queue_empty' });
+    return sendJson(res, 200, { decision: 'allow', reason: 'queue empty — exit cleanly, monitor will respawn on new tasks' });
+  }
+  // First time the queue is empty — ask Claude to verify once, then exit.
+  updateInstance(id, { status: 'idle' });
+  return sendJson(res, 200, {
+    decision: 'block',
+    reason: `Workflow queue for "${inst.agent}" looks empty. Call workflow_next_task(assignee="${inst.agent}", instance_id="${inst.id}") one more time to confirm. If it still returns empty, just complete the turn — the instance will be respawned automatically when new tasks arrive.`,
+  });
+}
+
+// MCP-facing: pop next queued task for this assignee, claim it, attach to instance.
+export async function handleNextTask(req, res) {
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const assignee = String(payload.assignee || '').trim();
+  const instanceId = String(payload.instance_id || '').trim();
+  if (!assignee) return sendJson(res, 400, { error: 'assignee required' });
+  const trig = popNextForAssignee(assignee, instanceId);
+  if (!trig) {
+    if (instanceId) updateInstance(instanceId, { status: 'idle', current_task_id: null });
+    return sendJson(res, 200, { empty: true });
+  }
+  const r = _claimTaskInternal(trig.task_id);
+  if (!r.ok) {
+    // Re-queue trigger so we don't lose it.
+    try {
+      const [p2, fm2] = findTask(trig.task_id);
+      if (p2) writeTrigger(trig.task_id, fm2, p2, { reason: 'reclaim_failed' });
+    } catch {}
+    return sendJson(res, r.code || 500, { error: r.error });
+  }
+  if (instanceId) claimTaskForInstance(instanceId, trig.task_id);
+  return sendJson(res, 200, {
+    task_id: trig.task_id,
+    status: r.fm.status,
+    attempts: r.fm.attempts || 0,
+    trigger: trig,
+  });
 }
 
 export async function handleStatsAggregate(res) {

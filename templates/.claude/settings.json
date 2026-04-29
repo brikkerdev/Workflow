@@ -29,6 +29,10 @@
           {
             "type": "command",
             "command": "workflow track-stats"
+          },
+          {
+            "type": "command",
+            "command": "workflow agent-loop-stop"
           }
         ]
       }
@@ -40,6 +44,17 @@
           {
             "type": "command",
             "command": "workflow track-stats"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "workflow agent-precompact"
           }
         ]
       }

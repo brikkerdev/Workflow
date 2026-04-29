@@ -34,13 +34,16 @@ Usage:
   workflow <command> [--project <path>] [args]
 
 Commands:
-  up [--port N] [--host H]   Start the local kanban web server.
+  up [--port N] [--host H]   Start the local kanban web server and open the browser.
   init [--agents <list>]     Scaffold .workflow/ + .claude/ in current project.
   agents                     List available and installed agents.
-  migrate [--apply]          Migrate legacy layout (.workflow/iterations/, global ACTIVE) to new track-as-timeline structure. Dry-run by default.
+  spawn <agent>              Spawn a new agent instance terminal (requires running kanban).
+  migrate [--apply]          Migrate legacy layout to new track-as-timeline structure.
   check-queue                Print system-reminder if .workflow/queue/ has triggers.
   sync-subtasks              PostToolUse(TodoWrite) hook: mirror todos to task subtasks.
   track-stats                Stop hook: sum agent token usage and POST to kanban.
+  agent-loop-stop            Stop hook for spawned agent instances (decides continue/exit).
+  agent-precompact           PreCompact hook: mark instance for clean respawn.
   help                       Show this help.
 
 Agent selection (--agents):
@@ -147,18 +150,80 @@ function launchClaude(project) {
   }
 }
 
+function parsePort(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--port') return parseInt(rest[i + 1], 10) || 7777;
+  }
+  return parseInt(process.env.KANBAN_PORT || '7777', 10);
+}
+
+function openBrowser(url) {
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/c', 'start', '""', url], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch (e) {
+    console.log(`[workflow] open ${url} manually (${e.message})`);
+  }
+}
+
 function cmdUp(project, rest) {
   ensureWorkflowDir(project);
   // Sync tool-shipped files (commands, .workflow/templates, .mcp.json) so
   // existing projects pick up new commands and template fields automatically.
-  // Agents and settings.json are user-customizable and never overwritten.
   syncShippedFiles(project);
-  // Migrate legacy layout (top-level iterations/, global ACTIVE, track-tasks).
   autoMigrate(project);
-  launchClaude(project);
+  const port = parsePort(rest);
   const env = { ...process.env, WORKFLOW_PROJECT: project };
   const args = [path.join(KANBAN, 'server.mjs'), ...rest];
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
+  // Open browser after a brief delay so the listener is up.
+  setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
+async function cmdSpawn(project, rest) {
+  ensureWorkflowDir(project);
+  const agent = rest[0];
+  if (!agent) {
+    console.error('[workflow] usage: workflow spawn <agent>');
+    process.exit(2);
+  }
+  const port = parseInt(process.env.KANBAN_PORT || '7777', 10);
+  const url = `http://127.0.0.1:${port}/api/instance/spawn`;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent }),
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      console.error(`[workflow] spawn failed: ${text}`);
+      process.exit(1);
+    }
+    console.log(text);
+  } catch (e) {
+    console.error(`[workflow] kanban server not reachable on :${port} — run 'workflow up' first.`);
+    process.exit(1);
+  }
+}
+
+function cmdAgentLoopStop() {
+  const child = spawn(process.execPath, [path.join(KANBAN, 'agent_loop_stop.mjs')], {
+    env: process.env, stdio: ['inherit', 'inherit', 'inherit'],
+  });
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
+function cmdAgentPrecompact() {
+  const child = spawn(process.execPath, [path.join(KANBAN, 'agent_precompact.mjs')], {
+    env: process.env, stdio: ['inherit', 'inherit', 'inherit'],
+  });
   child.on('exit', code => process.exit(code ?? 0));
 }
 
@@ -438,10 +503,13 @@ switch (sub) {
   case 'up':           cmdUp(project, rest); break;
   case 'init':         cmdInit(project, agents); break;
   case 'agents':       cmdAgents(project); break;
+  case 'spawn':        cmdSpawn(project, rest); break;
   case 'migrate':      cmdMigrate(project, rest); break;
   case 'check-queue':  cmdCheckQueue(project); break;
   case 'sync-subtasks': cmdSyncSubtasks(project); break;
   case 'track-stats':  cmdTrackStats(project); break;
+  case 'agent-loop-stop': cmdAgentLoopStop(); break;
+  case 'agent-precompact': cmdAgentPrecompact(); break;
   case 'help':
   case '--help':
   case '-h':

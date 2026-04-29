@@ -15,6 +15,8 @@ import path from 'node:path';
 
 const KANBAN = (process.env.WORKFLOW_KANBAN || 'http://127.0.0.1:7777').replace(/\/$/, '');
 const ROOT = path.resolve(process.env.WORKFLOW_PROJECT || process.cwd());
+const INSTANCE_ID = process.env.WORKFLOW_INSTANCE_ID || null;
+const AGENT = process.env.WORKFLOW_AGENT || null;
 
 // ---------- stdio JSON-RPC framing ----------
 let stdinBuf = '';
@@ -163,7 +165,36 @@ const tools = [
       properties: { task_id: { type: 'string' }, summary: { type: 'string' } },
       required: ['task_id'],
     },
-    handler: async ({ task_id, summary }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/submit`, { summary: summary || '' }),
+    handler: async ({ task_id, summary }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/submit`, {
+      summary: summary || '', instance_id: INSTANCE_ID || undefined,
+    }),
+  },
+  {
+    name: 'workflow_next_task',
+    description: 'Pop next queued task for this agent and atomically claim it. Use inside the spawned-agent loop. Returns { empty: true } if queue empty, otherwise { task_id, status, attempts }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignee: { type: 'string', description: 'agent slug; defaults to $WORKFLOW_AGENT' },
+        instance_id: { type: 'string', description: 'instance id; defaults to $WORKFLOW_INSTANCE_ID' },
+      },
+    },
+    handler: async ({ assignee, instance_id }) => {
+      const a = assignee || AGENT;
+      const i = instance_id || INSTANCE_ID;
+      if (!a) throw new Error('assignee required (no WORKFLOW_AGENT in env)');
+      const r = await api('POST', '/api/next-task', { assignee: a, instance_id: i });
+      if (r.empty) return { empty: true };
+      // Fetch brief so the agent can start without an extra round-trip.
+      const brief = await api('GET', `/api/task/${encodeURIComponent(r.task_id)}?view=brief`);
+      let rework = null;
+      if (Number(brief.attempts) > 0) {
+        const notes = await api('GET', `/api/task/${encodeURIComponent(r.task_id)}?view=notes`);
+        const m = /### Reject —[\s\S]*?(?=###|\s*$)/g.exec(notes.notes || '');
+        if (m) rework = m[0].trim();
+      }
+      return { task_id: r.task_id, status: r.status, attempts: r.attempts, brief, rework, protocol: PROTOCOL };
+    },
   },
 ];
 

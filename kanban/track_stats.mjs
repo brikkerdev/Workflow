@@ -69,6 +69,25 @@ function postStats(taskId, sessionId, totals) {
   });
 }
 
+function postJSON(path, payload) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(payload);
+    const req = http.request({
+      host: '127.0.0.1', port: 7777, path,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+      timeout: 2000,
+    }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
+}
+
+// Thresholds per Anthropic per-turn windows. When current session usage
+// exceeds the limit, mark the instance for clean respawn.
+const RESPAWN_THRESHOLD = parseInt(process.env.WORKFLOW_RESPAWN_AT || '150000', 10);
+
 async function main() {
   const raw = await readStdin();
   if (!raw) { log('no stdin'); process.exit(0); }
@@ -82,6 +101,20 @@ async function main() {
   const sessionId = payload.session_id || 'unknown';
   const code = await postStats(result.tid, sessionId, result.totals);
   log(`POST status=${code}`);
+
+  // If running inside a spawned instance, post a heartbeat with token usage
+  // and request respawn if we crossed the threshold.
+  const instanceId = process.env.WORKFLOW_INSTANCE_ID;
+  if (instanceId) {
+    const used = (result.totals.input || 0) + (result.totals.output || 0);
+    await postJSON(`/api/instance/${encodeURIComponent(instanceId)}/heartbeat`, {
+      tokens_used: used,
+    });
+    if (used > RESPAWN_THRESHOLD) {
+      log(`tokens=${used} > ${RESPAWN_THRESHOLD} — requesting respawn`);
+      await postJSON(`/api/instance/${encodeURIComponent(instanceId)}/respawn`, {});
+    }
+  }
   process.exit(0);
 }
 

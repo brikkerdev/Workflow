@@ -87,21 +87,27 @@ function dataSignature() {
   ).sort().join('\n');
   const queue = (STATE.queue.items || []).map(q => `${q.task_id}|${q.assignee || ''}`).sort().join('\n');
   const iter = STATE.board.iteration ? `${STATE.board.iteration.id}|${STATE.board.iteration.track || ''}|${(STATE.board.iteration.readme || '').length}` : '';
-  return `${iter}\n${tasks}\n${tracks}\n${queue}`;
+  // tokens_used deliberately excluded — it changes every heartbeat and would
+  // trigger full DOM re-renders that flicker the UI. Status / current task
+  // changes still rebuild.
+  const instances = (STATE.instances || []).map(i => `${i.id}|${i.status}|${i.current_task_id || ''}`).sort().join('\n');
+  return `${iter}\n${tasks}\n${tracks}\n${queue}\n${instances}`;
 }
 
 async function refresh(opts = {}) {
   if (FIRST_REFRESH) renderSkeleton();
   try {
     const boardUrl = STATE.boardTrack ? `/api/board?track=${encodeURIComponent(STATE.boardTrack)}` : '/api/board';
-    const [board, tracks, queue, project] = await Promise.all([
+    const [board, tracks, queue, project, instances] = await Promise.all([
       api(boardUrl), api('/api/tracks'), api('/api/queue'),
       api('/api/project').catch(() => null),
+      api('/api/instances').catch(() => ({ instances: [] })),
     ]);
     STATE.board = board;
     STATE.tracks = tracks;
     STATE.queue = queue;
     STATE.project = project;
+    STATE.instances = instances.instances || [];
     if (project?.name) {
       const brand = document.querySelector('.brand');
       if (brand) brand.textContent = project.name;
@@ -124,6 +130,10 @@ async function refresh(opts = {}) {
     if (STATE.currentTab === 'tracks') renderTracks();
     else if (STATE.currentTab === 'agents') renderAgents();
     else renderBoard();
+  } else if (STATE.currentTab === 'agents' && typeof patchInstanceTokens === 'function') {
+    // Heartbeats arrive every Stop hook; tokens_used is excluded from the
+    // signature so we patch in place rather than tearing the cards down.
+    patchInstanceTokens();
   }
   checkConflict();
   FIRST_REFRESH = false;

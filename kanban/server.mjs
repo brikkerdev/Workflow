@@ -19,7 +19,10 @@ import {
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
+  handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
+  handleInstanceHeartbeat, handleInstanceRespawn, handleAgentLoopDecide, handleNextTask,
 } from './lib/handlers.mjs';
+import { startInstanceMonitor } from './lib/instance_monitor.mjs';
 
 function matchAttachment(p) {
   const m = /^\/api\/task\/([^/]+)\/attachments(?:\/(.+))?$/.exec(p);
@@ -52,8 +55,11 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/project') return handleProject(res);
       if (p === '/api/agents') return handleAgentsList(res);
       if (p === '/api/stats') return handleStatsAggregate(res);
+      if (p === '/api/instances') return handleInstancesList(res);
 
       let m;
+      m = /^\/api\/instance\/([^/]+)$/.exec(p);
+      if (m) return handleInstanceGet(res, decodeURIComponent(m[1]));
       m = /^\/api\/agent\/([^/]+)$/.exec(p);
       if (m) return handleAgent(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)$/.exec(p);
@@ -84,6 +90,18 @@ const server = http.createServer(async (req, res) => {
 
       // agents
       if (p === '/api/agents') return handleAgentCreate(req, res);
+
+      // instances
+      if (p === '/api/instance/spawn') return handleInstanceSpawn(req, res);
+      if (p === '/api/agent-loop/decide') return handleAgentLoopDecide(req, res);
+      if (p === '/api/next-task') return handleNextTask(req, res);
+      m = /^\/api\/instance\/([^/]+)\/(kill|heartbeat|respawn)$/.exec(p);
+      if (m) {
+        const id = decodeURIComponent(m[1]); const action = m[2];
+        if (action === 'kill') return handleInstanceKill(req, res, id);
+        if (action === 'heartbeat') return handleInstanceHeartbeat(req, res, id);
+        if (action === 'respawn') return handleInstanceRespawn(req, res, id);
+      }
 
       // iterations under a track
       m = /^\/api\/track\/([^/]+)\/iterations$/.exec(p);
@@ -151,6 +169,7 @@ if (!exists(WORKFLOW)) {
 console.log(`[kanban] root: ${ROOT}`);
 console.log(`[kanban] open http://${args.host}:${args.port}`);
 server.listen(args.port, args.host);
+startInstanceMonitor();
 
 // Watch .workflow/ for external edits (agents writing task files etc.)
 try {

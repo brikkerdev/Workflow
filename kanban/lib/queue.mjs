@@ -33,6 +33,44 @@ export function deleteTrigger(tid) {
   return true;
 }
 
+// Atomically claim the oldest queued trigger whose assignee matches.
+// Uses rename to a temp suffix so concurrent callers cannot grab the same one.
+// Returns the trigger payload (with task_id) or null.
+export function popNextForAssignee(assignee, instanceId) {
+  if (!exists(QUEUE_DIR)) return null;
+  const tag = String(instanceId || `pid${process.pid}`).replace(/[^a-z0-9-]/gi, '_');
+  const names = fs.readdirSync(QUEUE_DIR)
+    .filter(n => n.endsWith('.json'))
+    .sort();
+  for (const n of names) {
+    const src = path.join(QUEUE_DIR, n);
+    let trig;
+    try { trig = JSON.parse(readText(src)); } catch { continue; }
+    if (assignee && trig.assignee !== assignee) continue;
+    const claimed = path.join(QUEUE_DIR, `${n}.claimed-${tag}-${Date.now()}`);
+    try { fs.renameSync(src, claimed); }
+    catch { continue; } // someone else got it
+    try { fs.unlinkSync(claimed); } catch {}
+    return trig;
+  }
+  return null;
+}
+
+// Peek the next queued trigger for an assignee without removing it.
+export function peekNextForAssignee(assignee) {
+  if (!exists(QUEUE_DIR)) return null;
+  const names = fs.readdirSync(QUEUE_DIR)
+    .filter(n => n.endsWith('.json'))
+    .sort();
+  for (const n of names) {
+    let trig;
+    try { trig = JSON.parse(readText(path.join(QUEUE_DIR, n))); } catch { continue; }
+    if (assignee && trig.assignee !== assignee) continue;
+    return trig;
+  }
+  return null;
+}
+
 export function writeTrigger(tid, fm, taskPath, opts = {}) {
   fs.mkdirSync(QUEUE_DIR, { recursive: true });
   const trigger = path.join(QUEUE_DIR, `${tid}.json`);

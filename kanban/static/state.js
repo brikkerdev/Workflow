@@ -24,6 +24,7 @@ const STATE = {
   board:  { tasks: [], agents: [], iteration: null, actives: [], queue_size: 0, valid_statuses: ALL_STATUSES, transitions: {} },
   tracks: { tracks: [] },
   queue:  { size: 0, items: [] },
+  instances: [],
   taskIndex: {},
   currentTab: 'iteration',
   boardTrack: null,
