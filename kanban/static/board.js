@@ -51,7 +51,12 @@ function renderCard(t, opts = {}) {
   const tokChip = tokTotal
     ? `<span class="chip tok-badge" title="input ${stats.input} · output ${stats.output} · cache hit ${stats.cache_read}">${fmtTokShort(tokTotal)}</span>`
     : '';
-  const metaInner = depChips + estChip + attemptsChip + tokChip;
+  // Currently-working instance pin: reverse map current_task_id -> instance.
+  const workingInst = (STATE.instances || []).find(i => i.current_task_id === t.id && i.status !== 'dead');
+  const instChip = workingInst
+    ? `<span class="chip chip-instance" title="${escapeHtml(workingInst.id)} (${escapeHtml(workingInst.status)})" style="background:${agentColor(workingInst.agent)}22;border-color:${agentColor(workingInst.agent)}66">⚙ ${escapeHtml(workingInst.name || workingInst.id)}</span>`
+    : '';
+  const metaInner = depChips + estChip + attemptsChip + tokChip + instChip;
 
   // attachments thumbs (up to 3)
   const atts = t._attachments || [];

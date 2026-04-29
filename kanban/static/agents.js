@@ -17,53 +17,92 @@ function fmtTokens(n) {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-function instanceRow(inst) {
-  const taskHtml = inst.current_task_id
-    ? `<a href="#" class="inst-task" data-task="${escapeHtml(inst.current_task_id)}">${escapeHtml(inst.current_task_id)}</a>`
-    : `<span class="muted">idle</span>`;
+function instanceChip(inst) {
+  const tok = inst.tokens_used ? fmtTokens(inst.tokens_used) : '';
+  const taskBit = inst.current_task_id ? ` · ${escapeHtml(inst.current_task_id)}` : '';
   return `
-    <div class="agent-instance" data-id="${escapeHtml(inst.id)}">
-      <span class="dot s-${escapeHtml(inst.status)}" title="${escapeHtml(inst.status)}"></span>
-      <span class="inst-id mono">${escapeHtml(inst.id)}</span>
-      <span class="inst-task-cell">${taskHtml}</span>
-      <span class="inst-tokens muted mono" data-tokens>${fmtTokens(inst.tokens_used)}</span>
-      <div class="inst-actions">
-        <button class="iconbtn" data-act="respawn" title="Mark for clean respawn">↻</button>
-        <button class="iconbtn" data-act="kill" title="Kill instance + re-queue task">✕</button>
-      </div>
-    </div>
+    <button class="inst-chip s-${escapeHtml(inst.status)}" data-id="${escapeHtml(inst.id)}" title="${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${inst.current_task_id ? ' · on ' + inst.current_task_id : ''}${tok ? ' · ' + tok + ' tok' : ''}">
+      <span class="inst-chip-dot"></span>
+      <span class="inst-chip-name">${escapeHtml(inst.name || inst.id)}</span>
+      <span class="inst-chip-task muted">${taskBit}</span>
+      <span class="inst-chip-tok muted" data-tokens>${tok}</span>
+    </button>
   `;
 }
 
-function bindInstanceActions(card, agent) {
-  card.querySelectorAll('.inst-task').forEach(a => {
-    a.addEventListener('click', e => {
-      e.preventDefault();
-      openModal(a.dataset.task);
-    });
+function openInstanceMenu(inst, anchorEl) {
+  const existing = document.getElementById('inst-menu');
+  if (existing) existing.remove();
+  const menu = document.createElement('div');
+  menu.id = 'inst-menu';
+  menu.className = 'inst-menu';
+  const taskLink = inst.current_task_id
+    ? `<button data-act="open-task">Open task ${escapeHtml(inst.current_task_id)}</button>`
+    : '';
+  menu.innerHTML = `
+    <div class="inst-menu-head">
+      <span class="dot s-${escapeHtml(inst.status)}"></span>
+      <b>${escapeHtml(inst.name || inst.id)}</b>
+      <span class="muted mono">${escapeHtml(inst.agent)}</span>
+    </div>
+    <div class="inst-menu-meta muted">
+      id ${escapeHtml(inst.id)}<br>
+      status ${escapeHtml(inst.status)}${inst.current_task_id ? ' · on ' + escapeHtml(inst.current_task_id) : ''}<br>
+      tokens ${fmtTokens(inst.tokens_used)} · pid ${inst.terminal_pid || '?'}${inst.session_id ? '<br>session ' + escapeHtml(inst.session_id.slice(0, 8)) : ''}
+    </div>
+    <div class="inst-menu-actions">
+      ${taskLink}
+      <button data-act="respawn">↻ Respawn (fresh session)</button>
+      <button data-act="kill" class="danger">✕ Kill instance</button>
+    </div>
+  `;
+  document.body.appendChild(menu);
+  // Position below the chip
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - 280, r.left))}px`;
+  menu.style.top  = `${r.bottom + 6}px`;
+
+  const close = () => { menu.remove(); document.removeEventListener('click', onDoc, true); document.removeEventListener('keydown', onKey); };
+  const onDoc = (e) => { if (!menu.contains(e.target)) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  setTimeout(() => document.addEventListener('click', onDoc, true), 0);
+  document.addEventListener('keydown', onKey);
+
+  menu.querySelector('button[data-act="open-task"]')?.addEventListener('click', () => {
+    close();
+    openModal(inst.current_task_id);
   });
-  card.querySelectorAll('.agent-instance').forEach(row => {
-    const id = row.dataset.id;
-    row.querySelector('button[data-act="kill"]').addEventListener('click', async () => {
+  menu.querySelector('button[data-act="respawn"]').addEventListener('click', async () => {
+    close();
+    try {
+      await api(`/api/instance/${encodeURIComponent(inst.id)}/respawn`, { method: 'POST' });
+      toast(`respawn requested for ${inst.name || inst.id}`, 'success');
+      await refresh({ force: true });
+    } catch (err) { toast(`respawn failed: ${err.message}`, 'error'); }
+  });
+  menu.querySelector('button[data-act="kill"]').addEventListener('click', async () => {
+    close();
+    if (!await confirmModal({
+      title: 'Kill instance',
+      message: `Kill <b>${escapeHtml(inst.name || inst.id)}</b>?${inst.current_task_id ? ` Task <b>${escapeHtml(inst.current_task_id)}</b> will be re-queued.` : ''}`,
+      confirmText: 'Kill',
+      danger: true,
+    })) return;
+    try {
+      await api(`/api/instance/${encodeURIComponent(inst.id)}/kill`, { method: 'POST' });
+      toast(`killed ${inst.name || inst.id}`, 'success');
+      await refresh({ force: true });
+    } catch (err) { toast(`kill failed: ${err.message}`, 'error'); }
+  });
+}
+
+function bindInstanceActions(card) {
+  card.querySelectorAll('.inst-chip').forEach(chip => {
+    chip.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = chip.dataset.id;
       const inst = (STATE.instances || []).find(x => x.id === id);
-      if (!await confirmModal({
-        title: 'Kill instance',
-        message: `Kill <code>${escapeHtml(id)}</code>?${inst?.current_task_id ? ` Task <b>${escapeHtml(inst.current_task_id)}</b> will be re-queued.` : ''}`,
-        confirmText: 'Kill',
-        danger: true,
-      })) return;
-      try {
-        await api(`/api/instance/${encodeURIComponent(id)}/kill`, { method: 'POST' });
-        toast(`killed ${id}`, 'success');
-        await refresh({ force: true });
-      } catch (err) { toast(`kill failed: ${err.message}`, 'error'); }
-    });
-    row.querySelector('button[data-act="respawn"]').addEventListener('click', async () => {
-      try {
-        await api(`/api/instance/${encodeURIComponent(id)}/respawn`, { method: 'POST' });
-        toast(`respawn requested for ${id}`, 'success');
-        await refresh({ force: true });
-      } catch (err) { toast(`respawn failed: ${err.message}`, 'error'); }
+      if (inst) openInstanceMenu(inst, chip);
     });
   });
 }
@@ -166,9 +205,9 @@ function renderAgents() {
       </div>
       <div class="agent-instances-wrap" ${myInstances.length ? '' : 'hidden'}>
         <div class="agent-instances-head muted">
-          ${myInstances.length} live · click ✕ to kill, ↻ to respawn
+          <span>${myInstances.length} live · click for actions</span>
         </div>
-        <div class="agent-instances">${myInstances.map(instanceRow).join('')}</div>
+        <div class="agent-chips">${myInstances.map(instanceChip).join('')}</div>
       </div>
     `;
     card.querySelector('button[data-act="edit"]').addEventListener('click', e => {
@@ -186,7 +225,7 @@ function renderAgents() {
       } catch (err) { toast(`spawn failed: ${err.message}`, 'error'); }
       finally { btn.disabled = false; }
     });
-    bindInstanceActions(card, name);
+    bindInstanceActions(card);
     grid.appendChild(card);
   }
   page.appendChild(grid);
@@ -198,8 +237,8 @@ function renderAgents() {
 // already updated.
 function patchInstanceTokens() {
   for (const inst of (STATE.instances || [])) {
-    const cell = document.querySelector(`.agent-instance[data-id="${CSS.escape(inst.id)}"] [data-tokens]`);
-    if (cell) cell.textContent = fmtTokens(inst.tokens_used);
+    const cell = document.querySelector(`.inst-chip[data-id="${CSS.escape(inst.id)}"] [data-tokens]`);
+    if (cell) cell.textContent = inst.tokens_used ? fmtTokens(inst.tokens_used) : '';
   }
 }
 

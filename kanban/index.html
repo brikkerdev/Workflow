@@ -15,7 +15,14 @@
   <div class="topbar-left">
     <span class="brand">Workflow</span>
     <span class="topbar-sep"></span>
-    <select id="board-track" class="select-native" title="filter board by track"></select>
+    <div class="board-picker">
+      <button class="select" id="board-picker-btn" type="button" title="filter board by track">
+        <span class="select-label">track</span>
+        <span id="board-picker-label">All</span>
+        <span class="select-caret">▾</span>
+      </button>
+      <div class="board-picker-pop" id="board-picker-pop" hidden></div>
+    </div>
     <span class="topbar-sep"></span>
     <button class="select" id="iter-button" type="button">
       <span class="select-label">iter</span>

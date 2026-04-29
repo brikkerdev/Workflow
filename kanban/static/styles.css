@@ -268,6 +268,77 @@ select.select-native {
 }
 select.select-native:hover { border-color: var(--line-1); }
 
+/* board-picker (custom popover replacing the native track select) */
+.board-picker { position: relative; }
+.board-picker-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 360px;
+  max-height: 70vh;
+  overflow-y: auto;
+  z-index: 60;
+  background: var(--bg-0);
+  border: 1px solid var(--line-1);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+  padding: 4px;
+}
+.board-picker-pop[hidden] { display: none; }
+.bp-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.bp-row:hover { background: var(--bg-2); }
+.bp-row.selected { background: var(--bg-2); outline: 1px solid var(--line-1); }
+.bp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
+.bp-dot.s-active { background: #4ade80; box-shadow: 0 0 6px #4ade8088; }
+.bp-dot.s-idle { background: #60a5fa; }
+.bp-dot.s-archived { background: var(--fg-3); }
+.bp-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bp-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bp-sub {
+  font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bp-stat {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.bp-bar {
+  height: 3px;
+  background: var(--bg-2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.bp-bar > i {
+  display: block;
+  height: 100%;
+  background: #4ade80;
+  border-radius: 2px;
+  transition: width .2s;
+}
+.bp-divider {
+  height: 1px;
+  background: var(--line-0);
+  margin: 4px 6px;
+}
+.bp-empty { padding: 14px; text-align: center; font-size: 12px; }
+
 /* search */
 .search {
   display: flex; align-items: center; gap: 6px;
@@ -1544,46 +1615,105 @@ select.input {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.agent-instances {
-  display: flex; flex-direction: column;
-  gap: 2px;
+.agent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 100px;
+  overflow-y: auto;
 }
-.agent-instance {
-  display: grid;
-  grid-template-columns: 10px 1fr auto auto auto;
+.inst-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
+  padding: 3px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-0);
+  border-radius: 12px;
+  font-family: var(--font-mono);
   font-size: 11px;
-  padding: 4px 6px;
-  border-radius: 4px;
-  transition: background .12s;
+  color: var(--fg-1);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: border-color .12s, background .12s;
 }
-.agent-instance:hover { background: var(--bg-2); }
-.agent-instance .inst-id {
+.inst-chip:hover { border-color: var(--line-1); background: var(--bg-1); }
+.inst-chip-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  flex: 0 0 auto;
+}
+.inst-chip.s-working .inst-chip-dot { background: #4ade80; box-shadow: 0 0 5px #4ade8088; }
+.inst-chip.s-idle .inst-chip-dot { background: #60a5fa; }
+.inst-chip.s-starting .inst-chip-dot { background: #facc15; }
+.inst-chip.s-exiting .inst-chip-dot { background: #f97316; }
+.inst-chip.s-idle_exited .inst-chip-dot { background: var(--fg-3); }
+.inst-chip.s-dead .inst-chip-dot { background: #ef4444; }
+.inst-chip-name { font-weight: 600; }
+.inst-chip-task, .inst-chip-tok {
   font-size: 10px;
-  color: var(--fg-2);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
-.agent-instance .inst-task-cell { font-size: 11px; }
-.agent-instance .inst-task { color: var(--fg-0); }
-.agent-instance .inst-tokens { font-size: 10px; }
-.agent-instance .inst-actions {
-  display: flex; gap: 2px;
+.inst-chip-tok:empty { display: none; }
+
+/* Instance action popover */
+.inst-menu {
+  position: fixed;
+  z-index: 200;
+  width: 260px;
+  background: var(--bg-0);
+  border: 1px solid var(--line-1);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+  padding: 8px;
+  font-size: 12px;
 }
-.agent-instance .inst-actions .iconbtn {
-  width: 22px; height: 22px;
-  font-size: 11px;
+.inst-menu-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 4px 8px;
+  border-bottom: 1px solid var(--line-0);
 }
-.agent-instance .muted { color: var(--fg-3); }
-.agent-instance .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
-.agent-instance .dot.s-working { background: #4ade80; box-shadow: 0 0 6px #4ade8088; }
-.agent-instance .dot.s-idle { background: #60a5fa; }
-.agent-instance .dot.s-starting { background: #facc15; }
-.agent-instance .dot.s-exiting { background: #f97316; }
-.agent-instance .dot.s-dead { background: #ef4444; }
+.inst-menu-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
+.inst-menu-head .dot.s-working { background: #4ade80; }
+.inst-menu-head .dot.s-idle { background: #60a5fa; }
+.inst-menu-head .dot.s-starting { background: #facc15; }
+.inst-menu-head .dot.s-exiting { background: #f97316; }
+.inst-menu-head .dot.s-dead { background: #ef4444; }
+.inst-menu-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 6px 4px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--line-0);
+  margin-bottom: 6px;
+}
+.inst-menu-actions { display: flex; flex-direction: column; gap: 2px; }
+.inst-menu-actions button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-0);
+  font: inherit;
+  cursor: pointer;
+}
+.inst-menu-actions button:hover { background: var(--bg-2); }
+.inst-menu-actions button.danger { color: #ef4444; }
+.inst-menu-actions button.danger:hover { background: #ef444422; }
+
+/* Card chip showing which instance is on a task */
+.chip-instance {
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  font-weight: 600;
+}
 .tool-tag {
   background: var(--bg-2);
   padding: 1px 5px;

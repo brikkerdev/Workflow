@@ -34,10 +34,15 @@ function findLinuxTerminal() {
   return null;
 }
 
-export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'http://127.0.0.1:7777' }) {
+export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'http://127.0.0.1:7777', resumeSessionId = null }) {
   const claudePath = findOnPath('claude');
   if (!claudePath) throw new Error('claude not found on PATH');
-  const initialPrompt = `/agent-loop ${agent} ${instanceId}`;
+  // When resuming a prior session: just `claude --resume <session_id>` — Claude
+  // restores the conversation, no fresh /agent-loop prompt needed (it's already
+  // in context). When starting fresh: run the slash command as the first turn.
+  const claudeArgs = resumeSessionId
+    ? ['--resume', resumeSessionId]
+    : [`/agent-loop ${agent} ${instanceId}`];
   const env = {
     ...process.env,
     WORKFLOW_PROJECT: project,
@@ -47,12 +52,10 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
   };
 
   if (process.platform === 'win32') {
-    // `start` opens new window. The first quoted arg is the title (must be present).
-    // Pass the prompt as a single argument to claude.
     const title = `workflow:${agent}:${instanceId}`;
     const child = spawn(
       'cmd.exe',
-      ['/c', 'start', `"${title}"`, '/D', project, claudePath, initialPrompt],
+      ['/c', 'start', `"${title}"`, '/D', project, claudePath, ...claudeArgs],
       { cwd: project, detached: true, stdio: 'ignore', env, windowsHide: false },
     );
     child.unref();
@@ -63,28 +66,28 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
     const term = findLinuxTerminal();
     if (!term) throw new Error('no terminal emulator found (tried kitty, alacritty, wezterm, gnome-terminal, konsole, tilix, xterm)');
     let args;
-    if (term === 'kitty')              args = ['-d', project, claudePath, initialPrompt];
-    else if (term === 'alacritty')     args = ['--working-directory', project, '-e', claudePath, initialPrompt];
-    else if (term === 'wezterm')       args = ['start', '--cwd', project, '--', claudePath, initialPrompt];
-    else if (term === 'gnome-terminal') args = ['--working-directory', project, '--', claudePath, initialPrompt];
-    else if (term === 'konsole')       args = ['--workdir', project, '-e', claudePath, initialPrompt];
-    else                                args = ['-e', claudePath, initialPrompt];
+    if (term === 'kitty')              args = ['-d', project, claudePath, ...claudeArgs];
+    else if (term === 'alacritty')     args = ['--working-directory', project, '-e', claudePath, ...claudeArgs];
+    else if (term === 'wezterm')       args = ['start', '--cwd', project, '--', claudePath, ...claudeArgs];
+    else if (term === 'gnome-terminal') args = ['--working-directory', project, '--', claudePath, ...claudeArgs];
+    else if (term === 'konsole')       args = ['--workdir', project, '-e', claudePath, ...claudeArgs];
+    else                                args = ['-e', claudePath, ...claudeArgs];
     const child = spawn(term, args, { cwd: project, detached: true, stdio: 'ignore', env });
     child.unref();
     return { terminalPid: child.pid };
   }
 
-  // macOS — Terminal.app via osascript so we can pass the prompt.
+  // macOS — Terminal.app via osascript so we can pass arguments.
   const escProject = project.replace(/"/g, '\\"');
   const escClaude = claudePath.replace(/"/g, '\\"');
-  const escPrompt = initialPrompt.replace(/"/g, '\\"');
+  const argString = claudeArgs.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
   const envExports = Object.entries({
     WORKFLOW_PROJECT: project,
     WORKFLOW_INSTANCE_ID: instanceId,
     WORKFLOW_AGENT: agent,
     WORKFLOW_KANBAN: kanbanUrl,
   }).map(([k, v]) => `export ${k}=${JSON.stringify(v)}`).join('; ');
-  const cmd = `cd "${escProject}" && ${envExports} && "${escClaude}" "${escPrompt}"`;
+  const cmd = `cd "${escProject}" && ${envExports} && "${escClaude}" ${argString}`;
   const script = `tell application "Terminal" to do script ${JSON.stringify(cmd)}`;
   const child = spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore', env });
   child.unref();

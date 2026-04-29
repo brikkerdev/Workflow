@@ -967,6 +967,7 @@ export async function handleInstanceHeartbeat(req, res, id) {
   if ('claude_pid' in payload) patch.claude_pid = Number(payload.claude_pid) || null;
   if ('status' in payload && payload.status) patch.status = String(payload.status);
   if ('current_task_id' in payload) patch.current_task_id = payload.current_task_id || null;
+  if ('session_id' in payload && payload.session_id) patch.session_id = String(payload.session_id);
   const next = updateInstance(id, patch);
   return sendJson(res, 200, { ok: true, instance: next });
 }

@@ -81,6 +81,11 @@ async function openModal(id, opts = {}) {
   MODAL_DELETE_CONFIRM = false;
   renderFooter();
 
+  // saveModal disables this on submit; if the previous save succeeded the
+  // modal closed without re-enabling, so the button stayed dead. Reset here.
+  const saveBtn = document.getElementById('m-save');
+  if (saveBtn) saveBtn.disabled = false;
+
   document.getElementById('modal-bg').classList.add('open');
 }
 

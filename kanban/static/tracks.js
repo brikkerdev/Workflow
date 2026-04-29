@@ -89,8 +89,6 @@ function renderTrackSection(tr) {
       const act = btn.dataset.act;
       if (act === 'board') {
         STATE.boardTrack = tr.slug;
-        const sel = document.getElementById('board-track');
-        if (sel) sel.value = tr.slug;
         setTab('iteration');
         refresh();
       } else if (act === 'new-iter') openIterForm(tr.slug, null);
@@ -209,8 +207,6 @@ function renderIterRow(tr, it) {
     else if (act === 'delete') deleteIter(tr.slug, it.id);
     else if (act === 'board') {
       STATE.boardTrack = tr.slug;
-      const sel = document.getElementById('board-track');
-      if (sel) sel.value = tr.slug;
       setTab('iteration');
       refresh();
     }

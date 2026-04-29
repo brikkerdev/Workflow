@@ -23,6 +23,7 @@ import {
   handleInstanceHeartbeat, handleInstanceRespawn, handleAgentLoopDecide, handleNextTask,
 } from './lib/handlers.mjs';
 import { startInstanceMonitor } from './lib/instance_monitor.mjs';
+import { startStatsPoller } from './lib/stats_poller.mjs';
 
 function matchAttachment(p) {
   const m = /^\/api\/task\/([^/]+)\/attachments(?:\/(.+))?$/.exec(p);
@@ -170,6 +171,7 @@ console.log(`[kanban] root: ${ROOT}`);
 console.log(`[kanban] open http://${args.host}:${args.port}`);
 server.listen(args.port, args.host);
 startInstanceMonitor();
+startStatsPoller();
 
 // Watch .workflow/ for external edits (agents writing task files etc.)
 try {

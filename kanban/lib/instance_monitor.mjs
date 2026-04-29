@@ -31,6 +31,34 @@ async function spawnFresh(agent) {
   }
 }
 
+// Reopen the SAME claude session in a new terminal. Keeps the registry record
+// (id, current_task_id, session_id) — only the terminal_pid changes. Used when
+// a user accidentally closed the terminal so we don't burn fresh tokens
+// rebooting the agent's context.
+async function resumeInPlace(inst) {
+  if (!inst.session_id) return false;
+  try {
+    const { spawnInstance } = await import('../../bin/spawner.mjs');
+    const { terminalPid } = await spawnInstance({
+      agent: inst.agent,
+      instanceId: inst.id,
+      project: ROOT,
+      resumeSessionId: inst.session_id,
+    });
+    updateInstance(inst.id, {
+      terminal_pid: terminalPid,
+      status: inst.current_task_id ? 'working' : 'idle',
+      exit_reason: null,
+    });
+    broadcastChange('instances', { kind: 'resumed', instance_id: inst.id, agent: inst.agent });
+    process.stderr.write(`[monitor] resumed session ${inst.session_id.slice(0,8)} for ${inst.id}\n`);
+    return true;
+  } catch (e) {
+    process.stderr.write(`[monitor] resume failed for ${inst.id}: ${e.message}\n`);
+    return false;
+  }
+}
+
 function recoverTask(inst) {
   if (!inst.current_task_id) return false;
   const [p, fm, body] = findTask(inst.current_task_id);
@@ -66,17 +94,24 @@ async function tick() {
 
     if (inst.terminal_pid && pidAlive(inst.terminal_pid)) continue;
 
-    // PID gone but on Windows the launcher PID is gone almost immediately, so
-    // also lean on staleness of last_seen. If we have a fresh heartbeat treat
-    // as alive regardless of PID.
+    // On Windows the launcher PID dies near-instantly, so also trust a fresh
+    // heartbeat as proof of life regardless of PID.
     const lastSeen = Date.now() - new Date(inst.last_seen || inst.started_at || 0).getTime();
     if (lastSeen < 90_000) continue;
+
+    const wantsRespawn = !!inst.respawn_requested;
+
+    // Accidental close: terminal/session is gone, we have a session_id, and
+    // no one explicitly asked for a fresh session. Reopen the same session.
+    if (!wantsRespawn && inst.session_id) {
+      const ok = await resumeInPlace(inst);
+      if (ok) continue;
+    }
 
     const recovered = recoverTask(inst);
     if (recovered) {
       process.stderr.write(`[monitor] instance ${inst.id} dead — re-queued ${inst.current_task_id}\n`);
     }
-    const wantsRespawn = !!inst.respawn_requested;
     markDead(inst.id, inst.exit_reason || 'pid_gone');
     broadcastChange('instances', { kind: 'dead', instance_id: inst.id });
     if (wantsRespawn) {

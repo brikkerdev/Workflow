@@ -109,6 +109,7 @@ async function main() {
     const used = (result.totals.input || 0) + (result.totals.output || 0);
     await postJSON(`/api/instance/${encodeURIComponent(instanceId)}/heartbeat`, {
       tokens_used: used,
+      session_id: sessionId,
     });
     if (used > RESPAWN_THRESHOLD) {
       log(`tokens=${used} > ${RESPAWN_THRESHOLD} — requesting respawn`);

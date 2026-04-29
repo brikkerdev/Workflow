@@ -39,7 +39,7 @@ Commands:
   agents                     List available and installed agents.
   spawn <agent>              Spawn a new agent instance terminal (requires running kanban).
   migrate [--apply]          Migrate legacy layout to new track-as-timeline structure.
-  check-queue                Print system-reminder if .workflow/queue/ has triggers.
+  session-capture            SessionStart hook: record claude session_id on the instance.
   sync-subtasks              PostToolUse(TodoWrite) hook: mirror todos to task subtasks.
   track-stats                Stop hook: sum agent token usage and POST to kanban.
   agent-loop-stop            Stop hook for spawned agent instances (decides continue/exit).
@@ -326,10 +326,10 @@ function cmdMigrate(project, rest) {
   child.on('exit', code => process.exit(code ?? 0));
 }
 
-function cmdCheckQueue(project) {
+function cmdSessionCapture(project) {
   const env = { ...process.env, WORKFLOW_PROJECT: project };
-  const child = spawn(process.execPath, [path.join(KANBAN, 'check_queue.mjs')], {
-    env, stdio: 'inherit',
+  const child = spawn(process.execPath, [path.join(KANBAN, 'session_capture.mjs')], {
+    env, stdio: ['inherit', 'inherit', 'inherit'],
   });
   child.on('exit', code => process.exit(code ?? 0));
 }
@@ -505,7 +505,7 @@ switch (sub) {
   case 'agents':       cmdAgents(project); break;
   case 'spawn':        cmdSpawn(project, rest); break;
   case 'migrate':      cmdMigrate(project, rest); break;
-  case 'check-queue':  cmdCheckQueue(project); break;
+  case 'session-capture': cmdSessionCapture(project); break;
   case 'sync-subtasks': cmdSyncSubtasks(project); break;
   case 'track-stats':  cmdTrackStats(project); break;
   case 'agent-loop-stop': cmdAgentLoopStop(); break;

@@ -19,15 +19,33 @@ export function newInstanceId(agent) {
   return `${slug}-${rnd}`;
 }
 
-export function createInstance({ agent, terminalPid = null, claudePid = null }) {
+// Friendly names so the UI / task cards can say "Nova is on T012" instead of
+// "developer-a3f2c1 is on T012". Pick one not already in use.
+const NAME_POOL = [
+  'Nova', 'Atlas', 'Mira', 'Echo', 'Sable', 'Vega', 'Lyra', 'Onyx',
+  'Juno', 'Kepler', 'Orion', 'Pax', 'Quill', 'Rune', 'Sage', 'Tessa',
+  'Umber', 'Vesper', 'Wren', 'Yara', 'Zephyr', 'Aria', 'Brio', 'Cinder',
+  'Dune', 'Ember', 'Fable', 'Gale', 'Halo', 'Indigo',
+];
+
+function pickName(taken) {
+  const free = NAME_POOL.filter(n => !taken.has(n));
+  const pool = free.length ? free : NAME_POOL;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+export function createInstance({ agent, terminalPid = null, claudePid = null, name = null }) {
   ensureDir();
   const id = newInstanceId(agent);
+  const taken = new Set(listInstances().filter(i => i.status !== 'dead').map(i => i.name).filter(Boolean));
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const data = {
     id,
+    name: name || pickName(taken),
     agent,
     terminal_pid: terminalPid,
     claude_pid: claudePid,
+    session_id: null,
     started_at: now,
     last_seen: now,
     current_task_id: null,

@@ -32,8 +32,8 @@ function updateHeader() {
   const tracksBadge = document.getElementById('tracks-badge');
   const trackCount = (STATE.tracks.tracks || []).length;
   tracksBadge.textContent = trackCount ? `(${trackCount})` : '';
-  const busyCount = allTasks().filter(t => t.status === 'in-progress').length;
-  document.getElementById('agents-badge').textContent = busyCount ? `(${busyCount})` : '';
+  const liveInstances = (STATE.instances || []).filter(i => i.status !== 'dead').length;
+  document.getElementById('agents-badge').textContent = liveInstances ? `(${liveInstances})` : '';
   const iterBadge = document.getElementById('iteration-badge');
   if (iterBadge) {
     const total = (STATE.board.tasks || []).length;
@@ -176,12 +176,36 @@ function bindChrome() {
   document.getElementById('density-toggle')?.addEventListener('click', () => {
     applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
   });
-  const sel = document.getElementById('board-track');
-  if (sel) sel.addEventListener('change', () => {
-    STATE.boardTrack = sel.value || null;
-    refresh();
-  });
+  bindBoardPicker();
   bindSearch();
+}
+
+function bindBoardPicker() {
+  const btn = document.getElementById('board-picker-btn');
+  const pop = document.getElementById('board-picker-pop');
+  if (!btn || !pop) return;
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !pop.hidden;
+    if (open) { pop.hidden = true; return; }
+    renderBoardPickerPop();
+    pop.hidden = false;
+  });
+  document.addEventListener('click', e => {
+    if (pop.hidden) return;
+    if (e.target === btn || btn.contains(e.target)) return;
+    if (pop.contains(e.target)) return;
+    pop.hidden = true;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !pop.hidden) pop.hidden = true;
+  });
+}
+
+function selectBoardTrack(slug) {
+  STATE.boardTrack = slug || null;
+  document.getElementById('board-picker-pop').hidden = true;
+  refresh();
 }
 
 function rerenderActiveView() {
@@ -210,25 +234,82 @@ function bindSearch() {
 }
 
 function populateBoardTrackPicker() {
-  const sel = document.getElementById('board-track');
-  if (!sel) return;
+  const label = document.getElementById('board-picker-label');
+  if (!label) return;
+  const cur = STATE.boardTrack;
+  const tracks = STATE.tracks.tracks || [];
+  if (!cur) {
+    const actives = STATE.board.actives || [];
+    label.textContent = `All active${actives.length ? ` · ${actives.length}` : ''}`;
+  } else {
+    const tr = tracks.find(t => t.slug === cur);
+    const activeIter = tr?.iterations?.find(i => i.id === tr.active);
+    label.textContent = activeIter
+      ? `${cur} · ${activeIter.id} ${activeIter.title || activeIter.slug || ''}`.trim()
+      : `${cur} · no active`;
+  }
+  // If popover is open, re-render so counts stay fresh.
+  const pop = document.getElementById('board-picker-pop');
+  if (pop && !pop.hidden) renderBoardPickerPop();
+}
+
+function renderBoardPickerPop() {
+  const pop = document.getElementById('board-picker-pop');
+  if (!pop) return;
   const tracks = STATE.tracks.tracks || [];
   const cur = STATE.boardTrack || '';
-  const want = ['', ...tracks.map(t => t.slug)].join('|');
-  if (sel.dataset.populated === want && sel.value === cur) return;
-  sel.innerHTML = '';
-  const optAll = document.createElement('option');
-  optAll.value = '';
-  optAll.textContent = 'All active tracks';
-  sel.appendChild(optAll);
-  for (const t of tracks) {
-    const o = document.createElement('option');
-    o.value = t.slug;
-    o.textContent = `${t.slug}${t.active ? ' · ' + t.active : ''}`;
-    sel.appendChild(o);
+
+  // Aggregate-all row.
+  const allActives = STATE.board.actives || [];
+  const allRowSel = cur ? '' : ' selected';
+  let html = `
+    <div class="bp-row${allRowSel}" data-slug="">
+      <div class="bp-dot s-active"></div>
+      <div class="bp-main">
+        <div class="bp-title">All active tracks</div>
+        <div class="bp-sub muted">${allActives.length} active iteration${allActives.length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="bp-stat">${(STATE.board.tasks || []).length} task${(STATE.board.tasks || []).length === 1 ? '' : 's'}</div>
+    </div>
+    <div class="bp-divider"></div>
+  `;
+
+  if (!tracks.length) {
+    html += `<div class="bp-empty muted">no tracks yet</div>`;
   }
-  sel.value = cur;
-  sel.dataset.populated = want;
+
+  for (const t of tracks) {
+    const sel = cur === t.slug ? ' selected' : '';
+    const archived = t.fm?.status === 'archived';
+    const activeIter = (t.iterations || []).find(i => i.id === t.active);
+    const totalTasks = (t.iterations || []).reduce((s, i) => s + (i.task_count || 0), 0);
+    const totalDone = (t.iterations || []).reduce((s, i) => s + (i.done_count || 0), 0);
+    const itersDone = (t.iterations || []).filter(i => i.status === 'done').length;
+    const itersAll = (t.iterations || []).length;
+    const dotKind = archived ? 'archived' : (activeIter ? 'active' : 'idle');
+    const sub = activeIter
+      ? `iter ${activeIter.id}${activeIter.title ? ' · ' + activeIter.title : ''} — ${activeIter.done_count || 0}/${activeIter.task_count || 0}`
+      : (archived ? 'archived' : 'no active iteration');
+    const progress = totalTasks
+      ? `<div class="bp-bar"><i style="width:${Math.round(totalDone * 100 / totalTasks)}%"></i></div>`
+      : '';
+    html += `
+      <div class="bp-row${sel}" data-slug="${escapeHtml(t.slug)}">
+        <div class="bp-dot s-${dotKind}"></div>
+        <div class="bp-main">
+          <div class="bp-title">${escapeHtml(t.slug)}${t.fm?.title && t.fm.title !== t.slug ? ` <span class="muted">· ${escapeHtml(t.fm.title)}</span>` : ''}</div>
+          <div class="bp-sub muted">${escapeHtml(sub)}</div>
+          ${progress}
+        </div>
+        <div class="bp-stat" title="${itersDone}/${itersAll} iterations done">${totalDone}/${totalTasks}</div>
+      </div>
+    `;
+  }
+
+  pop.innerHTML = html;
+  pop.querySelectorAll('.bp-row').forEach(row => {
+    row.addEventListener('click', () => selectBoardTrack(row.dataset.slug));
+  });
 }
 
 // ============ queue side-sheet ============

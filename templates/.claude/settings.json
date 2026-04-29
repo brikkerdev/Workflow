@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workflow check-queue"
+            "command": "workflow session-capture"
           }
         ]
       }
