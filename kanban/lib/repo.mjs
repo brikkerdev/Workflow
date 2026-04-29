@@ -176,6 +176,19 @@ export function listAgents() {
     .sort();
 }
 
+// Read `model:` from an agent's frontmatter. Returns the alias (`opus`,
+// `sonnet`, `haiku`) or full model id; null if unset or agent missing. The
+// spawner forwards this as `claude --model <value>` so each agent runs on
+// its declared tier.
+export function getAgentModel(slug) {
+  const p = path.join(AGENTS_DIR, `${slug}.md`);
+  if (!exists(p)) return null;
+  const [fm] = parseTask(readText(p));
+  const m = fm && fm.model;
+  if (!m || typeof m !== 'string') return null;
+  return m.trim() || null;
+}
+
 export function findTask(taskId) {
   const candidates = [];
   for (const slug of listTrackSlugs()) {

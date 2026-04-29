@@ -260,3 +260,16 @@ async function handle(msg) {
 }
 
 log(`up · kanban=${KANBAN} · root=${ROOT}`);
+
+// Bind the real claude.exe PID to this instance. The MCP server is spawned
+// directly by claude (`.mcp.json` runs `node <path>`), so process.ppid is the
+// persistent claude process — not a transient wrapper, unlike Stop/SessionStart
+// hooks which go through workflow.cmd → node workflow.mjs → node hook.mjs and
+// see a short-lived intermediate parent. Posted once at startup so the
+// instance monitor can do reliable pidAlive() checks instead of guessing from
+// transcript mtime.
+if (INSTANCE_ID && process.ppid) {
+  api('POST', `/api/instance/${encodeURIComponent(INSTANCE_ID)}/heartbeat`, { claude_pid: process.ppid })
+    .then(() => log(`bound claude_pid=${process.ppid} to instance ${INSTANCE_ID}`))
+    .catch(e => log(`bind claude_pid failed: ${e.message}`));
+}

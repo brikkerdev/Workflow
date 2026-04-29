@@ -35,9 +35,11 @@ async function spawnFresh(agent) {
   try {
     const { spawnInstance } = await import('../../bin/spawner.mjs');
     const { createInstance, updateInstance: upd } = await import('./instances.mjs');
+    const { getAgentModel } = await import('./repo.mjs');
     const inst = createInstance({ agent });
-    const { terminalPid } = await spawnInstance({ agent, instanceId: inst.id, project: ROOT });
-    upd(inst.id, { terminal_pid: terminalPid });
+    const model = getAgentModel(agent);
+    const { terminalPid } = await spawnInstance({ agent, instanceId: inst.id, project: ROOT, model });
+    upd(inst.id, { terminal_pid: terminalPid, model: model || null });
     broadcastChange('instances', { kind: 'respawn', instance_id: inst.id, agent });
     return inst.id;
   } catch (e) {
@@ -54,11 +56,14 @@ async function resumeInPlace(inst) {
   if (!inst.session_id) return false;
   try {
     const { spawnInstance } = await import('../../bin/spawner.mjs');
+    const { getAgentModel } = await import('./repo.mjs');
+    const model = inst.model || getAgentModel(inst.agent);
     const { terminalPid } = await spawnInstance({
       agent: inst.agent,
       instanceId: inst.id,
       project: ROOT,
       resumeSessionId: inst.session_id,
+      model,
     });
     updateInstance(inst.id, {
       terminal_pid: terminalPid,
@@ -107,16 +112,32 @@ async function tick() {
     const ageMs = Date.now() - new Date(inst.started_at || 0).getTime();
     if (ageMs < 15000) continue;
 
-    if (inst.terminal_pid && pidAlive(inst.terminal_pid)) continue;
-
-    // The launcher PID is meaningless on Windows (cmd /c start exits at once).
-    // Trust ANY of: fresh heartbeat OR fresh transcript mtime — the latter
-    // catches long tool-heavy turns where Stop never fires.
+    // claude_pid is bound by the MCP server at startup (process.ppid there is
+    // the persistent claude.exe — MCP is spawned directly, no wrapper chain).
+    // Alive PID is authoritative; dead PID still gets a transcript sanity-check
+    // because old records may carry a stale PID from a previous hook chain
+    // that mis-identified the parent.
     const now = Date.now();
-    const lastSeen = now - new Date(inst.last_seen || inst.started_at || 0).getTime();
-    if (lastSeen < 5 * 60_000) continue;
-    const tMtime = transcriptMtime(inst.session_id);
-    if (tMtime && (now - tMtime) < 5 * 60_000) continue;
+    if (inst.claude_pid) {
+      if (pidAlive(inst.claude_pid)) continue;
+      const tMtime = transcriptMtime(inst.session_id);
+      if (tMtime && (now - tMtime) < 5 * 60_000) {
+        // PID dead but agent is clearly working — drop the bad PID, let the
+        // next MCP startup or transcript tick rebind it.
+        process.stderr.write(`[monitor] ${inst.id}: claude_pid ${inst.claude_pid} dead but transcript fresh — clearing stale PID\n`);
+        updateInstance(inst.id, { claude_pid: null });
+        continue;
+      }
+      // PID dead AND transcript stale → genuinely gone. Fall through.
+    } else {
+      // No claude_pid bound yet (early startup, or pre-MCP-bind). Use the
+      // legacy fallbacks until MCP comes up.
+      if (inst.terminal_pid && pidAlive(inst.terminal_pid)) continue;
+      const lastSeen = now - new Date(inst.last_seen || inst.started_at || 0).getTime();
+      if (lastSeen < 5 * 60_000) continue;
+      const tMtime = transcriptMtime(inst.session_id);
+      if (tMtime && (now - tMtime) < 5 * 60_000) continue;
+    }
 
     const wantsRespawn = !!inst.respawn_requested;
 
@@ -153,6 +174,13 @@ function rehydrateInstances() {
   const FRESH_WINDOW = 30 * 60_000; // 30 min — covers a long pause between turns
   for (const inst of listInstances()) {
     if (inst.status === 'dead') continue;
+    // If we have a claude_pid bound, trust the OS — alive PID means the
+    // agent survived the server restart, no need to inspect the transcript.
+    if (inst.claude_pid && pidAlive(inst.claude_pid)) {
+      updateInstance(inst.id, { last_seen: new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+      process.stderr.write(`[monitor] rehydrated ${inst.id} (${inst.agent}) — claude_pid ${inst.claude_pid} alive\n`);
+      continue;
+    }
     const mt = transcriptMtime(inst.session_id);
     if (mt && (now - mt) < FRESH_WINDOW) {
       // Reset last_seen to now so the standard tick gives this session a full

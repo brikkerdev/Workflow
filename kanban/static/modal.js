@@ -195,13 +195,19 @@ async function commitSectionEdit(id) {
 
 // Replace the body of a `## Heading` section with new content. If the section
 // doesn't exist, append it at end.
+//
+// No `m` flag: with multiline, `$` matches end-of-line, so the regex would
+// stop at the first newline of the section body and leave subsequent lines
+// untouched — the bug that caused old content to survive next to new content.
+// Without `m`, `$` is end-of-input; the lookahead correctly stops at the
+// next `## ` heading or the end of the document.
 function replaceSection(body, heading, newContent) {
-  const re = new RegExp(`(^##\\s+${heading.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*\\n)([\\s\\S]*?)(?=\\n##\\s|$)`, 'm');
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|\\n)(##\\s+${escaped}\\s*\\n)([\\s\\S]*?)(?=\\n##\\s|$)`);
   const trimmed = newContent.replace(/\s+$/, '');
   if (re.test(body)) {
-    return body.replace(re, (_, h) => `${h}${trimmed ? trimmed + '\n' : ''}`);
+    return body.replace(re, (_m, lead, h) => `${lead}${h}${trimmed ? trimmed + '\n' : ''}`);
   }
-  // append
   const sep = body.endsWith('\n') ? '' : '\n';
   return body + sep + `\n## ${heading}\n${trimmed ? trimmed + '\n' : ''}`;
 }

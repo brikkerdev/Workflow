@@ -44,6 +44,11 @@ async function main() {
   if (sessionId) {
     await postHeartbeat({ session_id: sessionId, status: 'idle' });
   }
+  // Note: we deliberately do NOT capture process.ppid here. On Windows the
+  // hook chain is claude.exe → cmd.exe (workflow.cmd) → node workflow.mjs →
+  // node session_capture.mjs, so ppid is the transient wrapper that exits
+  // immediately. claude_pid is bound by the MCP server instead, where ppid
+  // really is claude.exe.
   process.exit(0);
 }
 

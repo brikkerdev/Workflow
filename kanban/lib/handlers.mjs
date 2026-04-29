@@ -12,7 +12,7 @@ import {
   listIterations, findIteration, writeIterationReadme,
   activeIterations, highestTaskId, highestIterId,
   listTasksInIteration, listAllTasks,
-  listAgents, findTask, saveTask, depsSatisfied, findDepCycle,
+  listAgents, findTask, saveTask, depsSatisfied, findDepCycle, getAgentModel,
 } from './repo.mjs';
 import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
 import { queueCount, queueItems, writeTrigger, deleteTrigger, popNextForAssignee, peekNextForAssignee } from './queue.mjs';
@@ -932,8 +932,9 @@ export async function handleInstanceSpawn(req, res) {
   const inst = createInstance({ agent });
   try {
     const spawner = await getSpawner();
-    const { terminalPid } = await spawner({ agent, instanceId: inst.id, project: ROOT });
-    updateInstance(inst.id, { terminal_pid: terminalPid, status: 'starting' });
+    const model = getAgentModel(agent);
+    const { terminalPid } = await spawner({ agent, instanceId: inst.id, project: ROOT, model });
+    updateInstance(inst.id, { terminal_pid: terminalPid, status: 'starting', model: model || null });
   } catch (e) {
     removeInstance(inst.id);
     return sendJson(res, 500, { error: `spawn failed: ${e.message}` });
@@ -956,7 +957,12 @@ export async function handleInstanceKill(req, res, id) {
       try { deleteSnapshot(inst.current_task_id); } catch {}
     }
   }
-  if (inst.terminal_pid) {
+  // Prefer claude_pid (the real claude.exe captured via process.ppid in the
+  // SessionStart hook). terminal_pid on Windows is the cmd /c start launcher,
+  // long dead by the time we'd kill it.
+  if (inst.claude_pid) {
+    try { process.kill(inst.claude_pid); } catch {}
+  } else if (inst.terminal_pid) {
     try { process.kill(inst.terminal_pid); } catch {}
   }
   markDead(id, 'killed');
