@@ -7,6 +7,7 @@ import http from 'node:http';
 import url from 'node:url';
 import fs from 'node:fs';
 import { ROOT, WORKFLOW } from './lib/config.mjs';
+import { logger } from './lib/logger.mjs';
 import { exists } from './lib/repo.mjs';
 import { sendJson, serveStatic, attachSseClient, broadcastChange } from './lib/http.mjs';
 import {
@@ -35,7 +36,7 @@ function matchAttachment(p) {
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
   const p = u.pathname;
-  process.stderr.write(`[kanban] ${req.method} ${p}\n`);
+  logger.info('kanban', `${req.method} ${p}`);
 
   // Auto-broadcast change events after any successful non-GET request.
   if (req.method !== 'GET' && req.method !== 'OPTIONS') {
@@ -148,7 +149,7 @@ const server = http.createServer(async (req, res) => {
     }
     return sendJson(res, 404, { error: 'not found' });
   } catch (e) {
-    process.stderr.write(`[kanban] error: ${e.stack || e}\n`);
+    logger.error('kanban', 'unhandled request error', e);
     return sendJson(res, 500, { error: String(e.message || e) });
   }
 });
@@ -165,12 +166,12 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 
 if (!exists(WORKFLOW)) {
-  process.stderr.write(`[kanban] no .workflow/ dir at ${WORKFLOW}\n`);
+  logger.error('kanban', `no .workflow/ dir at ${WORKFLOW}`);
   process.exit(1);
 }
 
-console.log(`[kanban] root: ${ROOT}`);
-console.log(`[kanban] open http://${args.host}:${args.port}`);
+logger.info('kanban', `root: ${ROOT}`);
+logger.info('kanban', `open http://${args.host}:${args.port}`);
 server.listen(args.port, args.host);
 startInstanceMonitor();
 startStatsPoller();
@@ -189,10 +190,10 @@ try {
     }, 200);
   });
 } catch (e) {
-  process.stderr.write(`[kanban] fs.watch unavailable: ${e.message}\n`);
-  process.stderr.write(`[kanban] live board updates disabled — refresh manually\n`);
+  logger.warn('kanban', `fs.watch unavailable: ${e.message}`);
+  logger.warn('kanban', 'live board updates disabled — refresh manually');
 }
 
-function shutdown() { console.log('\n[kanban] bye'); process.exit(0); }
+function shutdown() { logger.info('kanban', 'bye'); process.exit(0); }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

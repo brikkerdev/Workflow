@@ -9,12 +9,18 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLogger } from '../kanban/lib/logger.mjs';
+const logger = createLogger('server');
 
 function findOnPath(name) {
   const exts = process.platform === 'win32'
     ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
     : [''];
-  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const extraDirs = process.platform !== 'win32'
+    ? [path.join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin']
+    : [];
+  const dirs = [...(process.env.PATH || '').split(path.delimiter).filter(Boolean), ...extraDirs];
   for (const d of dirs) {
     for (const e of exts) {
       const p = path.join(d, name + e);
@@ -36,7 +42,10 @@ function findLinuxTerminal() {
 
 export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'http://127.0.0.1:7777', resumeSessionId = null }) {
   const claudePath = findOnPath('claude');
-  if (!claudePath) throw new Error('claude not found on PATH');
+  if (!claudePath) {
+    logger.error('spawner', 'claude not found on PATH or known fallback dirs');
+    throw new Error('claude not found on PATH');
+  }
   // When resuming a prior session: just `claude --resume <session_id>` — Claude
   // restores the conversation, no fresh /agent-loop prompt needed (it's already
   // in context). When starting fresh: run the slash command as the first turn.
@@ -67,7 +76,10 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
 
   if (process.platform === 'linux') {
     const term = findLinuxTerminal();
-    if (!term) throw new Error('no terminal emulator found (tried kitty, alacritty, wezterm, gnome-terminal, konsole, tilix, xterm)');
+    if (!term) {
+      logger.error('spawner', 'no terminal emulator found (tried kitty, alacritty, wezterm, gnome-terminal, konsole, tilix, xterm)');
+      throw new Error('no terminal emulator found (tried kitty, alacritty, wezterm, gnome-terminal, konsole, tilix, xterm)');
+    }
     let args;
     if (term === 'kitty')              args = ['-d', project, claudePath, ...claudeArgs];
     else if (term === 'alacritty')     args = ['--working-directory', project, '-e', claudePath, ...claudeArgs];

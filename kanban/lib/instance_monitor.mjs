@@ -16,6 +16,7 @@ import { writeTrigger, peekNextForAssignee } from './queue.mjs';
 import { deleteSnapshot } from './snapshot.mjs';
 import { broadcastChange } from './http.mjs';
 import { ROOT } from './config.mjs';
+import { logger } from './logger.mjs';
 
 // Claude Code writes a JSONL transcript per session at
 // ~/.claude/projects/<encoded-cwd>/<session_id>.jsonl. Its mtime advances on
@@ -41,7 +42,7 @@ async function spawnFresh(agent) {
     broadcastChange('instances', { kind: 'respawn', instance_id: inst.id, agent });
     return inst.id;
   } catch (e) {
-    process.stderr.write(`[monitor] respawn failed for ${agent}: ${e.message}\n`);
+    logger.error('monitor', `respawn failed for ${agent}`, e);
     return null;
   }
 }
@@ -66,10 +67,10 @@ async function resumeInPlace(inst) {
       exit_reason: null,
     });
     broadcastChange('instances', { kind: 'resumed', instance_id: inst.id, agent: inst.agent });
-    process.stderr.write(`[monitor] resumed session ${inst.session_id.slice(0,8)} for ${inst.id}\n`);
+    logger.info('monitor', `resumed session ${inst.session_id.slice(0,8)} for ${inst.id}`);
     return true;
   } catch (e) {
-    process.stderr.write(`[monitor] resume failed for ${inst.id}: ${e.message}\n`);
+    logger.error('monitor', `resume failed for ${inst.id}`, e);
     return false;
   }
 }
@@ -94,7 +95,7 @@ async function tick() {
     // Auto-respawn cleanly-exited idle instances when new work appears for their agent.
     if (inst.status === 'idle_exited') {
       if (peekNextForAssignee(inst.agent)) {
-        process.stderr.write(`[monitor] respawning idle ${inst.agent} (instance ${inst.id}) — queue has work\n`);
+        logger.info('monitor', `respawning idle ${inst.agent} (instance ${inst.id}) — queue has work`);
         removeInstance(inst.id);
         await spawnFresh(inst.agent);
       }
@@ -129,7 +130,7 @@ async function tick() {
 
     const recovered = recoverTask(inst);
     if (recovered) {
-      process.stderr.write(`[monitor] instance ${inst.id} dead — re-queued ${inst.current_task_id}\n`);
+      logger.warn('monitor', `instance ${inst.id} dead — re-queued ${inst.current_task_id}`);
     }
     markDead(inst.id, inst.exit_reason || 'pid_gone');
     broadcastChange('instances', { kind: 'dead', instance_id: inst.id });
@@ -160,16 +161,16 @@ function rehydrateInstances() {
       // monitor leans on transcript mtime (the launcher PID is meaningless
       // after a server restart anyway).
       updateInstance(inst.id, { last_seen: new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z'), terminal_pid: null });
-      process.stderr.write(`[monitor] rehydrated ${inst.id} (${inst.agent}) — transcript touched ${Math.round((now - mt) / 1000)}s ago\n`);
+      logger.info('monitor', `rehydrated ${inst.id} (${inst.agent}) — transcript touched ${Math.round((now - mt) / 1000)}s ago`);
     } else if (inst.session_id) {
       // Transcript stale or missing — leave the record so the regular tick
       // handles dead-detection (re-queue + respawn or prune).
-      process.stderr.write(`[monitor] stale ${inst.id} (${inst.agent}) — transcript ${mt ? Math.round((now - mt) / 1000) + 's old' : 'missing'}\n`);
+      logger.warn('monitor', `stale ${inst.id} (${inst.agent}) — transcript ${mt ? Math.round((now - mt) / 1000) + 's old' : 'missing'}`);
     }
   }
 }
 
 export function startInstanceMonitor() {
   rehydrateInstances();
-  setInterval(() => { tick().catch(e => process.stderr.write(`[monitor] ${e.stack || e}\n`)); }, TICK_MS);
+  setInterval(() => { tick().catch(e => logger.error('monitor', 'tick error', e)); }, TICK_MS);
 }

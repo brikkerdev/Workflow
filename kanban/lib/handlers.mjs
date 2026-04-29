@@ -24,6 +24,7 @@ import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
 import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
+import { logger } from './logger.mjs';
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -824,7 +825,7 @@ export function _claimTaskInternal(tid) {
   fm.status = 'in-progress';
   saveTask(p, fm, body);
   if (!wasInProgress && !loadSnapshot(tid)) {
-    try { captureSnapshot(tid); } catch (e) { process.stderr.write(`[kanban] snapshot failed for ${tid}: ${e.message}\n`); }
+    try { captureSnapshot(tid); } catch (e) { logger.error('kanban', `snapshot failed for ${tid}`, e); }
   }
   deleteTrigger(tid);
   return { ok: true, fm, path: p, body };

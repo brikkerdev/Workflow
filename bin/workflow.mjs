@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import url from 'node:url';
+import { createLogger } from '../kanban/lib/logger.mjs';
+const logger = createLogger('workflow');
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
@@ -67,8 +69,8 @@ Examples:
 function ensureWorkflowDir(project) {
   const wf = path.join(project, '.workflow');
   if (!fs.existsSync(wf)) {
-    console.error(`[workflow] no .workflow/ at ${project}`);
-    console.error(`[workflow] run 'workflow init' to scaffold one.`);
+    logger.error('workflow', `no .workflow/ at ${project}`);
+    logger.error('workflow', "run 'workflow init' to scaffold one.");
     process.exit(1);
   }
 }
@@ -78,7 +80,11 @@ function findClaude() {
     ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
     : [''];
   const names = ['claude'];
-  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const extraDirs = process.platform !== 'win32'
+    ? [path.join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin']
+    : [];
+  const dirs = [...(process.env.PATH || '').split(path.delimiter).filter(Boolean), ...extraDirs];
   for (const d of dirs) {
     for (const n of names) {
       for (const e of exts) {
@@ -203,12 +209,12 @@ async function cmdSpawn(project, rest) {
     });
     const text = await r.text();
     if (!r.ok) {
-      console.error(`[workflow] spawn failed: ${text}`);
+      logger.error('workflow', `spawn failed: ${text}`);
       process.exit(1);
     }
     console.log(text);
   } catch (e) {
-    console.error(`[workflow] kanban server not reachable on :${port} — run 'workflow up' first.`);
+    logger.error('workflow', `kanban server not reachable on :${port} — run 'workflow up' first.`, e);
     process.exit(1);
   }
 }
@@ -463,8 +469,8 @@ function cmdInit(project, agentsArg) {
     selected = agentsArg.split(',').map(s => s.trim()).filter(Boolean);
     const unknown = selected.filter(n => !allAgents.has(n));
     if (unknown.length) {
-      console.error(`[workflow] unknown agents: ${unknown.join(', ')}`);
-      console.error(`[workflow] available: ${[...allAgents.keys()].join(', ')}`);
+      logger.error('workflow', `unknown agents: ${unknown.join(', ')}`);
+      logger.error('workflow', `available: ${[...allAgents.keys()].join(', ')}`);
       process.exit(1);
     }
   }
@@ -515,7 +521,7 @@ switch (sub) {
   case '-h':
   case undefined:      help(); break;
   default:
-    console.error(`[workflow] unknown command: ${sub}`);
+    logger.error('workflow', `unknown command: ${sub}`);
     help();
     process.exit(2);
 }
