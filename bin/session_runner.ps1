@@ -83,11 +83,18 @@ function Resolve-ZoneRect {
   param($zone, [int]$monitorIdx)
   if ($null -eq $zone) { return $null }
   if ($zone -is [string] -and $zone -eq 'fullscreen') { return Get-MonitorWorkArea $monitorIdx }
-  if ($zone -is [pscustomobject] -and $zone.PSObject.Properties.Name -contains 'x') {
-    $mon = Get-MonitorWorkArea $monitorIdx
-    return [pscustomobject]@{
-      X = $mon.X + [int]$zone.x; Y = $mon.Y + [int]$zone.y
-      W = [int]$zone.w; H = [int]$zone.h
+  if ($zone -is [pscustomobject]) {
+    # Inline grid: { "grid": "RxC", "cell": N }  -- splits work area uniformly.
+    if ($zone.PSObject.Properties.Name -contains 'grid') {
+      return Get-GridCellRect -spec $zone.grid -cell ([int]$zone.cell) -monitorIdx $monitorIdx
+    }
+    # Explicit pixel rect: { "x": 0, "y": 0, "w": 960, "h": 540 }
+    if ($zone.PSObject.Properties.Name -contains 'x') {
+      $mon = Get-MonitorWorkArea $monitorIdx
+      return [pscustomobject]@{
+        X = $mon.X + [int]$zone.x; Y = $mon.Y + [int]$zone.y
+        W = [int]$zone.w; H = [int]$zone.h
+      }
     }
   }
   if ($zone -is [int] -or ($zone -is [string] -and $zone -match '^\d+$')) {
@@ -96,6 +103,33 @@ function Resolve-ZoneRect {
   }
   Warn "unrecognized zone spec: $zone"
   return $null
+}
+
+# Split monitor work area into a uniform RxC grid and return cell N.
+# Cell numbering is row-major from top-left: 0=TL, 1=TR (for 2x2: 2=BL, 3=BR).
+function Get-GridCellRect {
+  param([string]$spec, [int]$cell, [int]$monitorIdx)
+  if ($spec -notmatch '^\s*(\d+)\s*[xX]\s*(\d+)\s*$') {
+    Warn "grid spec must look like 'RxC' (e.g. '2x2'), got: $spec"
+    return $null
+  }
+  $rows = [int]$Matches[1]; $cols = [int]$Matches[2]
+  $total = $rows * $cols
+  if ($cell -lt 0 -or $cell -ge $total) {
+    Warn "grid cell $cell out of range for ${rows}x${cols} (have $total)"
+    return $null
+  }
+  $mon = Get-MonitorWorkArea $monitorIdx
+  $cellW = [int]($mon.W / $cols)
+  $cellH = [int]($mon.H / $rows)
+  $row = [int]($cell / $cols)
+  $col = $cell % $cols
+  return [pscustomobject]@{
+    X = $mon.X + ($col * $cellW)
+    Y = $mon.Y + ($row * $cellH)
+    W = $cellW
+    H = $cellH
+  }
 }
 
 function Get-MonitorWorkArea {
@@ -162,8 +196,11 @@ function Wait-ForWindow {
   $deadline = (Get-Date).AddSeconds($timeoutSecs)
   while ((Get-Date) -lt $deadline) {
     $h = [IntPtr]::Zero
-    if ($titleSub) { $h = [WfWin]::FindByTitleSubstring($titleSub) }
-    if ($h -eq [IntPtr]::Zero -and $processId) { $h = [WfWin]::FindByPid($processId) }
+    # PID takes priority: a launched exe has a unique PID, whereas titles are
+    # ambiguous (Unity + Rider both contain the project name; multiple agents
+    # of the same kind share their prefix until disambiguated by instance_id).
+    if ($processId) { $h = [WfWin]::FindByPid($processId) }
+    if ($h -eq [IntPtr]::Zero -and $titleSub) { $h = [WfWin]::FindByTitleSubstring($titleSub) }
     if ($h -ne [IntPtr]::Zero) { return $h }
     Start-Sleep -Milliseconds 300
   }
@@ -243,41 +280,57 @@ function Start-UnityForProject {
 }
 
 # --- Generic launcher ------------------------------------------------------
+# Returns @{ Process; InstanceId } so spawn_agent calls can match the unique
+# per-instance window title (otherwise four spawns of the same agent all
+# match the substring "workflow:developer-light" and we'd reposition the
+# same window four times).
 function Start-Window {
   param($win)
+  $out = @{ Process = $null; InstanceId = $null }
   if ($win.spawn_agent) {
     Log "spawning workflow agent: $($win.spawn_agent)"
     $url = "http://127.0.0.1:$KanbanPort/api/instance/spawn"
     try {
       $body = @{ agent = $win.spawn_agent } | ConvertTo-Json -Compress
       $r = Invoke-RestMethod -Method POST -Uri $url -Body $body -ContentType 'application/json' -TimeoutSec 5
-      Start-Sleep -Milliseconds 600  # let cmd window open
-      return $null # match by title; cmd window title is "workflow:<agent>:<inst>"
-    } catch { Warn "spawn failed: $_"; return $null }
+      $out.InstanceId = $r.instance_id
+      Start-Sleep -Milliseconds 800  # let the cmd window come up before we hunt for it
+    } catch { Warn "spawn failed: $_" }
+    return $out
   }
   if ($win.url) {
     Log "opening url: $($win.url)"
     Start-Process $win.url
-    return $null
+    return $out
   }
   if ($win.open -eq 'unity') {
-    if (-not $manifest.unity_project) { Warn 'open=unity but unity_project not set'; return $null }
-    return Start-UnityForProject -projectPath $manifest.unity_project
+    if (-not $manifest.unity_project) { Warn 'open=unity but unity_project not set'; return $out }
+    $out.Process = Start-UnityForProject -projectPath $manifest.unity_project
+    return $out
   }
   if ($win.exe) {
     $argList = @()
     if ($win.args) { $argList = @($win.args) }
     Log "launching $($win.exe) $($argList -join ' ')"
-    return Start-Process -FilePath $win.exe -ArgumentList $argList -PassThru
+    try {
+      $out.Process = Start-Process -FilePath $win.exe -ArgumentList $argList -PassThru -ErrorAction Stop
+    } catch { Warn "launch failed for $($win.exe): $_" }
+    return $out
   }
   Warn "window has no launcher (need spawn_agent / url / open / exe): $($win | ConvertTo-Json -Compress)"
-  return $null
+  return $out
 }
 
 function Resolve-MatchTitle {
-  param($win)
+  param($win, $launch)
   if ($win.match_title) { return [string]$win.match_title }
-  if ($win.spawn_agent) { return "workflow:$($win.spawn_agent)" }
+  if ($win.spawn_agent) {
+    # Prefer the unique instance id so multiple spawns of the same agent are
+    # disambiguated. Falls back to the agent prefix if the spawn API didn't
+    # return an id (kanban offline etc.).
+    if ($launch.InstanceId) { return "workflow:$($win.spawn_agent):$($launch.InstanceId)" }
+    return "workflow:$($win.spawn_agent)"
+  }
   if ($win.url) {
     if ($win.url -match '^https?://[^/]*7777') { return 'Workflow' }
     return $null
@@ -307,9 +360,9 @@ for ($i = 0; $i -lt $desktops.Count; $i++) {
   Start-Sleep -Milliseconds 400
 
   foreach ($win in @($d.windows)) {
-    $proc = Start-Window -win $win
-    $matchTitle = Resolve-MatchTitle -win $win
-    $procPid = if ($proc) { [uint32]$proc.Id } else { 0 }
+    $launch = Start-Window -win $win
+    $matchTitle = Resolve-MatchTitle -win $win -launch $launch
+    $procPid = if ($launch.Process) { [uint32]$launch.Process.Id } else { 0 }
     $hwnd = Wait-ForWindow -titleSub $matchTitle -processId $procPid -timeoutSecs $waitSecs
     if ($hwnd -eq [IntPtr]::Zero) {
       Warn "could not locate window for '$matchTitle' within $waitSecs s"
