@@ -199,6 +199,7 @@ function cmdUp(project, rest) {
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
   setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
   if (sessionPath && !noSession) {
+    console.log(`[workflow] session manifest detected: ${sessionPath}`);
     setTimeout(() => launchSession(project, sessionPath, port), 1500);
   }
   child.on('exit', code => process.exit(code ?? 0));
@@ -241,7 +242,7 @@ function launchSession(project, manifestPath, kanbanPort) {
     logger.error('workflow', `session_runner.ps1 missing at ${runner}`);
     return;
   }
-  logger.info('workflow', `applying session manifest: ${manifestPath}`);
+  console.log(`[workflow] running session runner: ${runner}`);
   const args = [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', runner,
@@ -249,9 +250,13 @@ function launchSession(project, manifestPath, kanbanPort) {
     '-ProjectRoot', project,
     '-KanbanPort', String(kanbanPort),
   ];
-  const child = spawn('powershell.exe', args, { cwd: project, detached: true, stdio: 'inherit' });
-  child.on('error', e => logger.error('workflow', `session runner failed: ${e.message}`));
-  child.unref();
+  // No `detached` — a detached PS child on Windows loses access to the user's
+  // interactive desktop session, which is exactly where SendKeys for virtual
+  // desktop switching needs to land. stdio:'inherit' so output interleaves
+  // with the kanban server's log in the same terminal.
+  const child = spawn('powershell.exe', args, { cwd: project, stdio: 'inherit' });
+  child.on('error', e => console.error(`[workflow] session runner failed to start: ${e.message}`));
+  child.on('exit', code => console.log(`[workflow] session runner exited (code ${code})`));
 }
 
 async function cmdSpawn(project, rest) {

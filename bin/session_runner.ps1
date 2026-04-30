@@ -40,6 +40,7 @@ public static class WfWin {
   [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x; public int y; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
@@ -286,7 +287,7 @@ function Start-UnityForProject {
 # same window four times).
 function Start-Window {
   param($win)
-  $out = @{ Process = $null; InstanceId = $null }
+  $out = @{ Process = $null; InstanceId = $null; ForegroundHwnd = [IntPtr]::Zero }
   if ($win.spawn_agent) {
     Log "spawning workflow agent: $($win.spawn_agent)"
     $url = "http://127.0.0.1:$KanbanPort/api/instance/spawn"
@@ -300,7 +301,16 @@ function Start-Window {
   }
   if ($win.url) {
     Log "opening url: $($win.url)"
+    # Snapshot the foreground window before so we can detect the new browser
+    # window that pops up — title-based matching is unreliable when a tab is
+    # added to an already-running browser whose active tab title differs.
+    $beforeFg = [WfWin]::GetForegroundWindow()
     Start-Process $win.url
+    Start-Sleep -Milliseconds 1200
+    $afterFg = [WfWin]::GetForegroundWindow()
+    if ($afterFg -ne [IntPtr]::Zero -and $afterFg -ne $beforeFg) {
+      $out.ForegroundHwnd = $afterFg
+    }
     return $out
   }
   if ($win.open -eq 'unity') {
@@ -312,9 +322,18 @@ function Start-Window {
     $argList = @()
     if ($win.args) { $argList = @($win.args) }
     Log "launching $($win.exe) $($argList -join ' ')"
+    $beforeFg = [WfWin]::GetForegroundWindow()
     try {
       $out.Process = Start-Process -FilePath $win.exe -ArgumentList $argList -PassThru -ErrorAction Stop
     } catch { Warn "launch failed for $($win.exe): $_" }
+    # Browser launchers (msedge --new-window, chrome --new-window) and other
+    # apps whose Start-Process child exits quickly leave us without a usable
+    # PID. Capture the foreground window that pops up as a fallback.
+    Start-Sleep -Milliseconds 1200
+    $afterFg = [WfWin]::GetForegroundWindow()
+    if ($afterFg -ne [IntPtr]::Zero -and $afterFg -ne $beforeFg) {
+      $out.ForegroundHwnd = $afterFg
+    }
     return $out
   }
   Warn "window has no launcher (need spawn_agent / url / open / exe): $($win | ConvertTo-Json -Compress)"
@@ -363,7 +382,13 @@ for ($i = 0; $i -lt $desktops.Count; $i++) {
     $launch = Start-Window -win $win
     $matchTitle = Resolve-MatchTitle -win $win -launch $launch
     $procPid = if ($launch.Process) { [uint32]$launch.Process.Id } else { 0 }
-    $hwnd = Wait-ForWindow -titleSub $matchTitle -processId $procPid -timeoutSecs $waitSecs
+    $hwnd = [IntPtr]::Zero
+    # Foreground-window heuristic from URL launch: most reliable when the URL
+    # was just opened in the default browser and grabbed focus.
+    if ($launch.ForegroundHwnd -ne [IntPtr]::Zero) { $hwnd = $launch.ForegroundHwnd }
+    if ($hwnd -eq [IntPtr]::Zero) {
+      $hwnd = Wait-ForWindow -titleSub $matchTitle -processId $procPid -timeoutSecs $waitSecs
+    }
     if ($hwnd -eq [IntPtr]::Zero) {
       Warn "could not locate window for '$matchTitle' within $waitSecs s"
       continue
