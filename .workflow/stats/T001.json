@@ -1,0 +1,37 @@
+{
+  "task_id": "T001",
+  "by_session": {
+    "6a18adaa-f20a-41e4-b5e7-2a5ebad531c9:T001": {
+      "ts": "2026-04-30T08:30:13.714Z",
+      "input": 4,
+      "output": 3376,
+      "cache_read": 686790,
+      "cache_creation": 4312,
+      "messages": 4
+    },
+    "8dd0e30d-45d0-4846-befd-e294f0c36a23:T001": {
+      "ts": "2026-04-30T08:30:13.857Z",
+      "input": 128,
+      "output": 109967,
+      "cache_read": 6552151,
+      "cache_creation": 431477,
+      "messages": 74
+    },
+    "ebbd5738-a41d-4b34-8236-0a7bdec80e2a:T001": {
+      "ts": "2026-04-30T08:30:13.885Z",
+      "input": 519,
+      "output": 175831,
+      "cache_read": 39868584,
+      "cache_creation": 232251,
+      "messages": 202
+    }
+  },
+  "totals": {
+    "input": 651,
+    "output": 289174,
+    "cache_read": 47107525,
+    "cache_creation": 668040,
+    "messages": 280,
+    "runs": 3
+  }
+}

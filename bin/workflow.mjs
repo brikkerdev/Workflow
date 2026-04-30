@@ -187,7 +187,7 @@ function cmdUp(project, rest) {
   const env = { ...process.env, WORKFLOW_PROJECT: project };
   const args = [path.join(KANBAN, 'server.mjs'), ...rest];
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
-  setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
+  // setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
   child.on('exit', code => process.exit(code ?? 0));
 }
 
