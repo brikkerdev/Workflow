@@ -1,7 +1,12 @@
-// 4-column model per design.
+// 5-column model per design.
 // Maps backend status set {todo,queued,in-progress,verifying,auto-verifying,
-// awaiting-unity,passed-auto,red-auto,review,done} onto 4 visible columns:
-// Backlog, In progress, Review, Done.
+// awaiting-unity,passed-auto,red-auto,review,done} onto 5 visible columns:
+// Backlog, Pending, In progress, Review, Done.
+//
+// Pending is a virtual column: tasks with `auto_dispatch: true` (set by
+// handleIterStart on todo tasks whose deps weren't yet satisfied) live here
+// until their blockers complete and the server cascades them to In progress.
+// They have no dedicated status — colForTask() routes them by flag.
 //
 // Auto-track statuses (auto-verifying, awaiting-unity, passed-auto, red-auto)
 // land in Review so the user sees them as "needs attention" — passed-auto is
@@ -10,9 +15,10 @@
 
 const COLUMNS = [
   { key: 'backlog',     label: 'Backlog',     statuses: ['todo'],                  kbd: '1', primary: 'todo' },
-  { key: 'in-progress', label: 'In progress', statuses: ['in-progress','queued'],  kbd: '2', primary: 'in-progress' },
-  { key: 'review',      label: 'Review',      statuses: ['review','verifying','auto-verifying','awaiting-unity','passed-auto','red-auto'], kbd: '3', primary: 'verifying' },
-  { key: 'done',        label: 'Done',        statuses: ['done'],                  kbd: '4', primary: 'done' },
+  { key: 'pending',     label: 'Pending',     statuses: [],                        kbd: '2', primary: 'todo' },
+  { key: 'in-progress', label: 'In progress', statuses: ['in-progress','queued'],  kbd: '3', primary: 'in-progress' },
+  { key: 'review',      label: 'Review',      statuses: ['review','verifying','auto-verifying','awaiting-unity','passed-auto','red-auto'], kbd: '4', primary: 'verifying' },
+  { key: 'done',        label: 'Done',        statuses: ['done'],                  kbd: '5', primary: 'done' },
 ];
 
 const ALL_STATUSES = ['todo','queued','in-progress','verifying','auto-verifying','awaiting-unity','passed-auto','red-auto','review','done'];
@@ -20,6 +26,13 @@ const ALL_STATUSES = ['todo','queued','in-progress','verifying','auto-verifying'
 function colForStatus(status) {
   const c = COLUMNS.find(x => x.statuses.includes(status));
   return c ? c.key : 'backlog';
+}
+// Tasks need both fields to bucket — pending is flag-driven, not status-driven.
+function colForTask(t) {
+  if (t && (t.auto_dispatch === true || t.auto_dispatch === 'true') && t.status === 'todo') {
+    return 'pending';
+  }
+  return colForStatus(t ? t.status : null);
 }
 function statusForCol(colKey) {
   return (COLUMNS.find(x => x.key === colKey) || COLUMNS[0]).primary;
@@ -69,6 +82,7 @@ function depStatus(deps) {
 window.COLUMNS = COLUMNS;
 window.ALL_STATUSES = ALL_STATUSES;
 window.colForStatus = colForStatus;
+window.colForTask = colForTask;
 window.statusForCol = statusForCol;
 window.STATE = STATE;
 window.rebuildIndex = rebuildIndex;

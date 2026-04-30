@@ -526,6 +526,10 @@ export async function handlePatch(req, res, tid) {
     if (typeof v === 'string') v = v.split(',').map(s => s.trim()).filter(Boolean);
     fm.deps = v;
   }
+  if ('auto_dispatch' in patch) {
+    if (patch.auto_dispatch) fm.auto_dispatch = true;
+    else delete fm.auto_dispatch;
+  }
   let nextBody = body;
   if ('body' in patch && typeof patch.body === 'string') nextBody = patch.body;
   saveTask(p, fm, nextBody);

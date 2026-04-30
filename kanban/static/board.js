@@ -119,7 +119,7 @@ function buildKanbanInto(container, tasks, opts = {}) {
   container.innerHTML = '';
   container.className = 'board';
   const byCol = Object.fromEntries(COLUMNS.map(c => [c.key, []]));
-  for (const t of tasks) byCol[colForStatus(t.status)].push(t);
+  for (const t of tasks) byCol[colForTask(t)].push(t);
 
   for (const col of COLUMNS) {
     const node = document.createElement('div');
@@ -128,7 +128,7 @@ function buildKanbanInto(container, tasks, opts = {}) {
 
     const list = byCol[col.key];
     const empty = list.length === 0
-      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'review' ? 'nothing to review' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
+      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'pending' ? 'no waiting tasks' : col.key === 'review' ? 'nothing to review' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
       : '';
 
     node.innerHTML = `
@@ -152,13 +152,22 @@ function buildKanbanInto(container, tasks, opts = {}) {
       const id = e.dataTransfer.getData('text/plain');
       if (!id) return;
       const t = STATE.taskIndex[id];
+      // Pending is auto-managed (set by handleIterStart on todo+open-deps).
+      // Manual drops into it would be confusing — refuse.
+      if (col.key === 'pending') {
+        showDragReason(`pending is auto-managed`, e.clientX, e.clientY);
+        return;
+      }
       const newStatus = statusForCol(col.key);
       if (t && !depsAllReady(t) && (col.key === 'in-progress' || col.key === 'review' || col.key === 'done')) {
         showDragReason(`${id}: unmet deps`, e.clientX, e.clientY);
         return;
       }
+      // Leaving Pending: clear the auto_dispatch flag so the cascade doesn't
+      // re-fire it.
+      const fromPending = t && colForTask(t) === 'pending';
       const onMove = opts.onMove || moveTask;
-      await onMove(id, newStatus);
+      await onMove(id, newStatus, { clearAutoDispatch: fromPending });
     });
     if (list.length) {
       for (const t of list) body.appendChild(renderCard(t, opts));
@@ -183,17 +192,24 @@ function showDragReason(text, x, y) {
   DRAG_REASON_TIMER = setTimeout(() => { el.remove(); }, 1400);
 }
 
-async function moveTask(id, newStatus) {
+async function moveTask(id, newStatus, opts = {}) {
   const t = STATE.taskIndex[id];
-  if (!t || t.status === newStatus) return;
+  if (!t) return;
   const prevStatus = t.status;
+  const wasAutoDispatch = !!t.auto_dispatch;
+  // No-op if status unchanged AND we're not flipping the auto_dispatch flag.
+  if (prevStatus === newStatus && !opts.clearAutoDispatch) return;
+  const patch = { status: newStatus };
+  if (opts.clearAutoDispatch) patch.auto_dispatch = false;
   try {
-    await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+    await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
     toast(`${id} → ${newStatus}`, 'success', {
       undo: true,
       onUndo: async () => {
         try {
-          await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: prevStatus }) });
+          const undoPatch = { status: prevStatus };
+          if (opts.clearAutoDispatch && wasAutoDispatch) undoPatch.auto_dispatch = true;
+          await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify(undoPatch) });
           toast(`${id} reverted → ${prevStatus}`, 'success');
           await refresh();
         } catch (e) { toast(`undo failed: ${e.message}`, 'error'); }

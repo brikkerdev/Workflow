@@ -476,14 +476,20 @@ function moveCardToCol(card, colKey) {
   const id = card.dataset.id;
   const t = STATE.taskIndex[id];
   if (!t) return;
+  // Pending is auto-managed (set by handleIterStart on todo+open-deps).
+  if (colKey === 'pending') {
+    toast(`pending is auto-managed`, 'error');
+    return;
+  }
   const newStatus = statusForCol(colKey);
-  if (newStatus === t.status) return;
+  const fromPending = colForTask(t) === 'pending';
+  if (newStatus === t.status && !fromPending) return;
   // Same dep guard as drop
   if (!depsAllReady(t) && (colKey === 'in-progress' || colKey === 'review' || colKey === 'done')) {
     toast(`${id}: unmet deps`, 'error');
     return;
   }
-  moveTask(id, newStatus);
+  moveTask(id, newStatus, { clearAutoDispatch: fromPending });
 }
 
 async function actCard(card, action) {
