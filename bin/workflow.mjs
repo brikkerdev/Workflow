@@ -36,11 +36,7 @@ Usage:
   workflow <command> [--project <path>] [args]
 
 Commands:
-  up [--port N] [--host H] [--session [path] | --no-session]
-                             Start kanban + open browser. If .workflow/session.json
-                             exists (or --session given), arrange virtual desktops,
-                             launch Unity / agents / browsers and snap windows into
-                             FancyZones zones (Windows only).
+  up [--port N] [--host H]   Start the local kanban web server and open the browser.
   init [--agents <list>]     Scaffold .workflow/ + .claude/ in current project.
   agents                     List available and installed agents.
   spawn <agent>              Spawn a new agent instance terminal (requires running kanban).
@@ -188,75 +184,11 @@ function cmdUp(project, rest) {
   syncShippedFiles(project);
   autoMigrate(project);
   const port = parsePort(rest);
-
-  // Session manifest — pulled out of `rest` before it's forwarded to the kanban
-  // server. `--session` accepts a custom path; otherwise auto-detect the
-  // default at .workflow/session.json. `--no-session` opts out.
-  const { sessionPath, noSession, restClean } = parseSessionFlags(rest, project);
-
   const env = { ...process.env, WORKFLOW_PROJECT: project };
-  const args = [path.join(KANBAN, 'server.mjs'), ...restClean];
+  const args = [path.join(KANBAN, 'server.mjs'), ...rest];
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
   setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
-  if (sessionPath && !noSession) {
-    console.log(`[workflow] session manifest detected: ${sessionPath}`);
-    setTimeout(() => launchSession(project, sessionPath, port), 1500);
-  }
   child.on('exit', code => process.exit(code ?? 0));
-}
-
-function parseSessionFlags(rest, project) {
-  let sessionPath = null;
-  let noSession = false;
-  const restClean = [];
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '--session') {
-      const next = rest[i + 1];
-      if (next && !next.startsWith('--')) { sessionPath = path.resolve(next); i++; }
-      else { sessionPath = path.join(project, '.workflow', 'session.json'); }
-    } else if (rest[i] === '--no-session') {
-      noSession = true;
-    } else {
-      restClean.push(rest[i]);
-    }
-  }
-  // Auto-detect default manifest if neither flag was passed.
-  if (!sessionPath && !noSession) {
-    const def = path.join(project, '.workflow', 'session.json');
-    if (fs.existsSync(def)) sessionPath = def;
-  }
-  return { sessionPath, noSession, restClean };
-}
-
-function launchSession(project, manifestPath, kanbanPort) {
-  if (!fs.existsSync(manifestPath)) {
-    logger.warn('workflow', `session manifest not found: ${manifestPath}`);
-    return;
-  }
-  if (process.platform !== 'win32') {
-    logger.warn('workflow', 'session orchestration is Windows-only for now (PowerShell + WinAPI). skipping.');
-    return;
-  }
-  const runner = path.join(REPO, 'bin', 'session_runner.ps1');
-  if (!fs.existsSync(runner)) {
-    logger.error('workflow', `session_runner.ps1 missing at ${runner}`);
-    return;
-  }
-  console.log(`[workflow] running session runner: ${runner}`);
-  const args = [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', runner,
-    '-ManifestPath', manifestPath,
-    '-ProjectRoot', project,
-    '-KanbanPort', String(kanbanPort),
-  ];
-  // No `detached` — a detached PS child on Windows loses access to the user's
-  // interactive desktop session, which is exactly where SendKeys for virtual
-  // desktop switching needs to land. stdio:'inherit' so output interleaves
-  // with the kanban server's log in the same terminal.
-  const child = spawn('powershell.exe', args, { cwd: project, stdio: 'inherit' });
-  child.on('error', e => console.error(`[workflow] session runner failed to start: ${e.message}`));
-  child.on('exit', code => console.log(`[workflow] session runner exited (code ${code})`));
 }
 
 async function cmdSpawn(project, rest) {
