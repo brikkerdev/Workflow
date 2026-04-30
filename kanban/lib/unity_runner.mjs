@@ -17,7 +17,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { iterWorktreePath } from './worktrees.mjs';
 import { logMark, readLogSince, classifyLines } from './unity_log.mjs';
 import { logger } from './logger.mjs';
 
@@ -49,14 +48,11 @@ export async function unityRunner(job) {
   if (!argv || !argv.length) {
     return { passed: false, log: 'unity job missing payload.argv (Unity invocation command)' };
   }
-  // Run Unity against the iteration's integration worktree, where every
-  // agent's per-task work has already been merged. The per-task worktrees
-  // are isolated checkouts and Unity can't reason about the integrated state
-  // from there.
-  const base = job.iteration ? iterWorktreePath(job.iteration) : ROOT;
+  // Run Unity against ROOT — the user's main checkout. All agents edit
+  // there, so Unity sees the latest combined state with no extra plumbing.
   const cwd = job.payload.cwd
-    ? path.resolve(base, job.payload.cwd)
-    : base;
+    ? path.resolve(ROOT, job.payload.cwd)
+    : ROOT;
 
   const mark = logMark();
   const timeoutMs = Number(job.payload.timeout_ms) || DEFAULT_TIMEOUT_MS;

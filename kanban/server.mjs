@@ -20,7 +20,7 @@ import {
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
-  handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleCommitWorktree, handleVerifyQueueList,
+  handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleVerifyQueueList,
   handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
   handleIterFinalizeInfo, handleIterFinalize,
   applyVerifyJobResult,
@@ -87,7 +87,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|auto-verify-start|auto-verify-result|how-to-verify|commit-worktree)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|auto-verify-start|auto-verify-result|how-to-verify)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -100,7 +100,6 @@ const server = http.createServer(async (req, res) => {
         if (action === 'auto-verify-start') return handleAutoVerifyStart(req, res, tid);
         if (action === 'auto-verify-result') return handleAutoVerifyResult(req, res, tid);
         if (action === 'how-to-verify') return handleHowToVerify(req, res, tid);
-        if (action === 'commit-worktree') return handleCommitWorktree(req, res, tid);
       }
 
       // tracks

@@ -7,10 +7,6 @@ import {
   AUTO_VERIFY_REWORK_LIMIT,
   trackDir, trackActiveFile, trackItersDir, iterDirFor,
 } from './config.mjs';
-import {
-  provisionIterWorktree, iterWorktreePath, iterationBranchName,
-  commitWorktreeWork,
-} from './worktrees.mjs';
 import { enqueueVerify, listJobs as listVerifyJobs } from './verify_queue.mjs';
 import {
   closeIteration as runCloseIteration,
@@ -431,10 +427,9 @@ export function handleTask(res, tid, query = {}) {
       verify, // verification steps for the agent's awareness
     };
     if (context) out.context = context;
-    // Auto-verify hints: agent must work inside worktree_path and call the
-    // auto_verify_* MCP tools instead of submit_for_verify.
+    // Hint: auto-verify tasks call auto_verify_* MCP tools; the server
+    // commits and pushes when the run passes.
     if (fm.auto_verify === 'true' || fm.auto_verify === true) out.auto_verify = true;
-    if (fm.worktree_path) out.worktree_path = fm.worktree_path;
     if (Array.isArray(fm.expected_files) && fm.expected_files.length) out.expected_files = fm.expected_files;
     if (fm.unity_verify === 'true' || fm.unity_verify === true) out.unity_verify = true;
     return sendJson(res, 200, out);
@@ -703,12 +698,17 @@ export function handleDispatch(res, tid) {
 export async function handleIterStart(req, res, trackSlug, iterId) {
   const it = findIteration(trackSlug, iterId);
   if (!it) return sendJson(res, 404, { error: 'iteration not found' });
-  // Provision the iteration's integration worktree once. This is the checkout
-  // where Unity verifies the integrated work; per-task branches merge into
-  // it as agents finish. Idempotent.
-  const iterWt = provisionIterWorktree(iterId);
-  if (!iterWt.ok) {
-    return sendJson(res, 500, { error: `iter worktree: ${iterWt.error}` });
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const force = !!payload.force;
+  // Refuse a re-run unless force=true. The `started` timestamp doubles as
+  // both the run marker and the human-facing "started at" label.
+  const prevStarted = it.fm?.started || '';
+  if (prevStarted && !force) {
+    return sendJson(res, 409, {
+      error: 'iteration already started',
+      started: prevStarted,
+      hint: 'pass { "force": true } to re-dispatch (e.g. after adding new tasks)',
+    });
   }
   const tasks = listTasksInIteration(trackSlug, iterId);
   const agents = listAgents();
@@ -735,7 +735,26 @@ export async function handleIterStart(req, res, trackSlug, iterId) {
     if (r.ok) queued.push(t.id);
     else skipped.push({ id: t.id, reason: r.error });
   }
-  sendJson(res, 200, { queued, pending, skipped, queue_size: queueCount(), iter_worktree: rel(iterWt.path) });
+  // Stamp the iteration as started so the UI can hide the button and so a
+  // subsequent call without `force` is rejected. Idempotent — re-run with
+  // force=true keeps the original timestamp as `restarted` audit trail.
+  try {
+    const readmePath = path.join(it.dir, 'README.md');
+    if (exists(readmePath)) {
+      const [fm, body] = parseTask(readText(readmePath));
+      if (fm) {
+        const now = new Date().toISOString();
+        if (!fm.started) fm.started = now;
+        else fm.restarted = now;
+        fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
+      }
+    }
+  } catch (e) { logger.warn('kanban', `mark iteration started: ${e.message}`); }
+
+  sendJson(res, 200, {
+    queued, pending, skipped, queue_size: queueCount(),
+    forced: force,
+  });
 }
 
 export function handleQueueStatus(res) {
@@ -932,6 +951,47 @@ function runCommitPush(taskPath, fm, summary) {
   }
 }
 
+// Server-side commit-and-finish for auto-verified tasks. Reuses the same
+// commit pipeline that handleVerify (manual approve) runs, but the task is
+// already approved by virtue of auto-verify passing. Always runs async so
+// the agent's MCP call doesn't block on git.
+function commitAndFinish(tid, summary) {
+  try {
+    const cur = findTask(tid);
+    if (!cur[0]) return;
+    let curFm = cur[1];
+    let curBody = cur[2];
+
+    const git = runCommitPush(cur[0], curFm, summary || '');
+
+    if (git.error && !git.commit) {
+      const errBlock = `### Commit failed — ${fmtDate()}\n\n${git.error}`;
+      curBody = appendToSection(curBody, 'Notes', errBlock);
+      saveTask(cur[0], curFm, curBody);
+      broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'commit_failed' });
+      return;
+    }
+    if (git.error) {
+      const warnBlock = `### Push failed — ${fmtDate()}\n\n${git.error}\n\nLocal commit ${git.commit?.slice(0, 7) || ''} is in place; push manually.`;
+      curBody = appendToSection(curBody, 'Notes', warnBlock);
+    }
+    curFm.status = 'done';
+    saveTask(cur[0], curFm, curBody);
+    broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'done', commit: git.commit });
+    try { releasePendingDispatch(); } catch {}
+  } catch (e) {
+    try {
+      const cur = findTask(tid);
+      if (cur[0]) {
+        const errBlock = `### Commit failed — ${fmtDate()}\n\n${String(e.message || e)}`;
+        const errBody = appendToSection(cur[2], 'Notes', errBlock);
+        saveTask(cur[0], cur[1], errBody);
+        broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'commit_failed' });
+      }
+    } catch {}
+  }
+}
+
 // ---------- Agent-facing endpoints (also reachable via MCP) ----------
 
 // Internal helper — performs the claim transition + snapshot. Does not write HTTP.
@@ -944,24 +1004,10 @@ export function _claimTaskInternal(tid) {
   }
   const wasInProgress = fm.status === 'in-progress';
   fm.status = 'in-progress';
-  // Auto-verify tasks get an isolated worktree so parallel agents don't
-  // collide on the same files. The worktree path is persisted on the task
-  // so the spawner can launch the agent with the right cwd.
-  const isAuto = fm.auto_verify === 'true' || fm.auto_verify === true;
-  // Auto-mode tasks share the iteration's worktree (where Unity is open and
-  // agents read/write the integrated state). Per-task isolation was removed
-  // because Unity-MCP can't see uncommitted work across separate worktrees;
-  // file-level conflicts between agents are serialized by the queue's
-  // expected_files lock instead.
-  if (fm.iteration && !fm.worktree_path) {
-    const iterWt = provisionIterWorktree(fm.iteration);
-    if (iterWt.ok) {
-      fm.worktree_path = rel(iterWt.path);
-      fm.worktree_branch = iterationBranchName(fm.iteration);
-    } else {
-      logger.warn('kanban', `iter worktree for ${fm.iteration} failed: ${iterWt.error}`);
-    }
-  }
+  // Stale fields from the worktree era — strip on claim so re-claims can't
+  // rehydrate dead state from old frontmatter.
+  if ('worktree_path' in fm) delete fm.worktree_path;
+  if ('worktree_branch' in fm) delete fm.worktree_branch;
   saveTask(p, fm, body);
   if (!wasInProgress && !loadSnapshot(tid)) {
     try { captureSnapshot(tid); } catch (e) { logger.error('kanban', `snapshot failed for ${tid}`, e); }
@@ -974,23 +1020,6 @@ export async function handleClaim(req, res, tid) {
   const r = _claimTaskInternal(tid);
   if (!r.ok) return sendJson(res, r.code, { error: r.error });
   return sendJson(res, 200, { ok: true, task_id: tid, status: r.fm.status, attempts: r.fm.attempts || 0 });
-}
-
-// Capture any uncommitted work in the iteration worktree as a final commit
-// on the iter branch. Agents are expected to call `workflow_commit_task` at
-// the end of their work; this is the safety net if they forgot. Conflicts
-// are impossible (we only commit, no merge) so the only failure mode is git
-// itself.
-function integrateTaskWorktree(fm) {
-  if (!fm.worktree_path) return { ok: true, merged: false, skipped: true };
-  const author = fm.assignee && fm.assignee !== 'user'
-    ? `${fm.assignee} <${fm.assignee}@workflow.local>`
-    : null;
-  return commitWorktreeWork(fm.id, {
-    worktree: fm.worktree_path,
-    message: `${fm.id}: ${fm.title || fm.id}`,
-    author,
-  });
 }
 
 export async function handleSubmitVerify(req, res, tid) {
@@ -1006,15 +1035,6 @@ export async function handleSubmitVerify(req, res, tid) {
   if (summary) {
     const block = `### Submit — attempt ${Number(fm.attempts || 0)} — ${fmtDate()}\n\n${summary}`;
     newBody = appendToSection(body, 'Notes', block);
-  }
-  // Safety net: commit any uncommitted work in the iter-worktree (the agent
-  // is supposed to have called workflow_commit_task already).
-  const captured = integrateTaskWorktree(fm);
-  if (!captured.ok) {
-    const note = `### Worktree commit failed — ${fmtDate()}\n\n${captured.error}`;
-    newBody = appendToSection(newBody, 'Notes', note);
-    saveTask(p, fm, newBody);
-    return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
   }
   fm.status = 'verifying';
   saveTask(p, fm, newBody);
@@ -1296,10 +1316,12 @@ export async function handleAutoVerifyStart(req, res, tid) {
 
 // POST /api/task/:id/auto-verify-result
 // Body: { passed: bool, log: string, needs_unity?: bool, unity_payload?: {...} }
-// Outcomes:
-//   passed=true               -> passed-auto, release file claim
-//   needs_unity=true          -> awaiting-unity, enqueue verify_queue job (unity_editor lock)
-//   passed=false              -> rework loop: in-progress (attempt++) until limit, then red-auto
+// Outcomes (server owns the commit — agents never run git):
+//   passed=true     -> server commits agent's edits in ROOT, status = done
+//   needs_unity     -> awaiting-unity, enqueue verify_queue job; on Unity pass
+//                      the worker calls applyVerifyJobResult which commits
+//                      and lands the task at done
+//   passed=false    -> rework loop (in-progress, attempt++) until limit -> red-auto
 export async function handleAutoVerifyResult(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
@@ -1316,15 +1338,9 @@ export async function handleAutoVerifyResult(req, res, tid) {
   const limit = Number(fm.auto_verify_limit || AUTO_VERIFY_REWORK_LIMIT);
   const ts = fmtDate();
 
-  // Defer to Unity: hand off to verify queue. Make sure any uncommitted work
-  // hits the iter branch first so the Unity job sees it.
+  // Defer to Unity: hand off to verify queue. The Unity batch run inspects
+  // the agent's still-uncommitted edits in ROOT; the worker commits later.
   if (needsUnity && fm.status === 'auto-verifying') {
-    const captured = integrateTaskWorktree(fm);
-    if (!captured.ok) {
-      const note = `### Worktree commit failed (pre-Unity) — attempt ${attempt} — ${ts}\n\n${captured.error}`;
-      saveTask(p, fm, appendToSection(body, 'Notes', note));
-      return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
-    }
     const jobId = enqueueVerify({
       taskId: tid,
       iteration: fm.iteration || null,
@@ -1341,19 +1357,12 @@ export async function handleAutoVerifyResult(req, res, tid) {
   }
 
   if (passed) {
-    const captured = integrateTaskWorktree(fm);
-    if (!captured.ok) {
-      const note = `### Worktree commit failed — attempt ${attempt} — ${ts}\n\n${captured.error}`;
-      saveTask(p, fm, appendToSection(body, 'Notes', note));
-      return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
-    }
-    fm.status = 'passed-auto';
-    fm.auto_verify_status = 'green';
-    const tail = captured.committed ? `\n\nSafety-committed straggler edits to \`${iterationBranchName(fm.iteration)}\`.` : '';
-    const block = `### Auto-verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}${tail}`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
+    const block0 = `### Auto-verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}`;
+    saveTask(p, fm, appendToSection(body, 'Notes', block0));
     try { releaseExpectedFiles(tid); } catch {}
-    return sendJson(res, 200, { ok: true, status: fm.status });
+    sendJson(res, 202, { ok: true, status: 'committing', task_id: tid });
+    setImmediate(() => commitAndFinish(tid, ''));
+    return;
   }
 
   // Failed.
@@ -1370,28 +1379,6 @@ export async function handleAutoVerifyResult(req, res, tid) {
   const block = `### Auto-verify failed — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}\n\nAgent should rework and re-run auto-verify.`;
   saveTask(p, fm, appendToSection(body, 'Notes', block));
   return sendJson(res, 200, { ok: true, status: fm.status, rework: true, attempts_left: limit - attempt });
-}
-
-// POST /api/task/:id/commit-worktree  body: { summary?: string }
-// Agent commits its work in the per-task worktree on the per-task branch.
-// Centralizes commit message format and author so the iteration log stays
-// uniform. No-op when there's nothing to commit.
-export async function handleCommitWorktree(req, res, tid) {
-  const [p, fm] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (!fm.worktree_path) {
-    return sendJson(res, 409, { error: 'task has no worktree (no iteration set, or iteration not started)' });
-  }
-  let payload = {}; try { payload = await readBody(req); } catch {}
-  const summary = String(payload.summary || '').trim();
-  const title = fm.title || tid;
-  const msg = summary ? `${tid}: ${title}\n\n${summary}` : `${tid}: ${title}`;
-  const author = fm.assignee && fm.assignee !== 'user'
-    ? `${fm.assignee} <${fm.assignee}@workflow.local>`
-    : null;
-  const r = commitWorktreeWork(tid, { worktree: fm.worktree_path, message: msg, author });
-  if (!r.ok) return sendJson(res, 500, { error: r.error });
-  return sendJson(res, 200, { ok: true, committed: !!r.committed });
 }
 
 // POST /api/task/:id/how-to-verify  body: { content: "markdown" }
@@ -1435,7 +1422,8 @@ export function handleIterFinalizeInfo(res, trackSlug, iterId) {
 // POST /api/track/:slug/iteration/:id/finalize
 // Body: { target_branch, summary?, ack_incomplete? }
 // Salvage-commit, merge auto/iter-<id> into target_branch with --no-ff,
-// generate CHECKLIST.md, tear down iter worktree, mark iteration done.
+// generate CHECKLIST.md, mark iteration done. No git work — all per-task
+// commits already landed on the user's ROOT branch.
 export async function handleIterFinalize(req, res, trackSlug, iterId) {
   let payload = {}; try { payload = await readBody(req); }
   catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
@@ -1465,7 +1453,7 @@ export async function handleIterFinalize(req, res, trackSlug, iterId) {
     }
   } catch (e) { logger.warn('kanban', `clear ACTIVE failed: ${e.message}`); }
 
-  broadcastChange('change', { kind: 'iter_finalize', iter_id: iterId, target: r.target });
+  broadcastChange('change', { kind: 'iter_finalize', iter_id: iterId, closed: r.closed || [] });
   return sendJson(res, 200, r);
 }
 
@@ -1516,11 +1504,14 @@ export function applyVerifyJobResult(job, result) {
   const log = (result.log || '').trim();
 
   if (result.passed) {
-    fm.status = 'passed-auto';
-    fm.auto_verify_status = 'green';
     const block = `### Unity verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}`;
     saveTask(p, fm, appendToSection(body, 'Notes', block));
     try { releaseExpectedFiles(tid); } catch {}
+    // Server takes the task home: commit + push + status=done. Async so the
+    // Unity worker isn't blocked on git.
+    setImmediate(() => commitAndFinish(tid, ''));
+    broadcastChange('change', { kind: 'auto_verify', task_id: tid, status: 'committing' });
+    return;
   } else if (attempt >= limit) {
     fm.status = 'red-auto';
     fm.auto_verify_status = 'red';

@@ -332,8 +332,12 @@ function buildBoardHeader(iter) {
 
   const trackPart = track ? `<span class="board-title">${escapeHtml(track)}</span><span class="muted mono t-12">/</span>` : '';
   const isActive = iter.status === 'active';
-  const startBtn = isActive
+  const isStarted = !!(iter.fm?.started || iter.started);
+  const startBtn = isActive && !isStarted
     ? `<button class="btn btn-sm" id="board-start-iter" title="Dispatch every todo task in this iteration to its agent">▷ Start iteration</button>`
+    : '';
+  const restartBtn = isActive && isStarted
+    ? `<button class="btn btn-sm" id="board-restart-iter" title="Re-dispatch: queue any new todo tasks added after the first start">↻ Re-dispatch</button>`
     : '';
   const finalizeBtn = isActive
     ? `<button class="btn btn-sm" id="board-finalize-iter" title="Review checklist and merge auto/iter-${escapeHtml(String(iter.id || ''))} into a target branch">✓ Finalize</button>`
@@ -344,7 +348,7 @@ function buildBoardHeader(iter) {
       ${trackPart}
       <span class="board-title" style="color:var(--fg-1)">${escapeHtml(iter.id || '')} ${escapeHtml(iter.slug || '')}</span>
       <span class="board-iter-meta">— ${escapeHtml(title)}</span>
-      <span class="board-iter-actions">${startBtn} ${finalizeBtn}</span>
+      <span class="board-iter-actions">${startBtn} ${restartBtn} ${finalizeBtn}</span>
     </div>
     <div class="board-progress">
       <span class="label">Tasks</span>
@@ -354,23 +358,27 @@ function buildBoardHeader(iter) {
   `;
   if (isActive) {
     const startEl = wrap.querySelector('#board-start-iter');
-    if (startEl) startEl.addEventListener('click', () => startBoardIteration(track, iter.id));
+    if (startEl) startEl.addEventListener('click', () => startBoardIteration(track, iter.id, false));
+    const restartEl = wrap.querySelector('#board-restart-iter');
+    if (restartEl) restartEl.addEventListener('click', () => startBoardIteration(track, iter.id, true));
     const finalizeEl = wrap.querySelector('#board-finalize-iter');
     if (finalizeEl) finalizeEl.addEventListener('click', () => openFinalizeModal(track, iter.id));
   }
   return wrap;
 }
 
-async function startBoardIteration(track, iterId) {
+async function startBoardIteration(track, iterId, force = false) {
   if (!track) { toast('no track context — open a specific track to start its iteration', 'error'); return; }
   if (!await confirmModal({
-    title: 'Start iteration',
-    message: `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
-    confirmText: 'Dispatch all',
+    title: force ? 'Re-dispatch iteration' : 'Start iteration',
+    message: force
+      ? `Re-dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b>? Already-running tasks are untouched; this picks up todos added after the first start.`
+      : `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
+    confirmText: force ? 'Re-dispatch' : 'Dispatch all',
   })) return;
   try {
     const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(iterId)}/start`, {
-      method: 'POST', body: JSON.stringify({}),
+      method: 'POST', body: JSON.stringify(force ? { force: true } : {}),
     });
     const skipped = (r.skipped || []).length;
     const queued = (r.queued || []).length;

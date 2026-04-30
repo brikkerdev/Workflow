@@ -129,10 +129,12 @@ function renderIterRow(tr, it) {
   const isActive = tr.active === it.id || it.status === 'active';
   const taskCount = it.task_count || 0;
 
+  const isStarted = !!(it.fm?.started || it.started);
   const actBtns = [];
   if (isPlanned) actBtns.push(`<button class="iconbtn" data-act="activate" title="Activate">▶</button>`);
   if (isActive) actBtns.push(`<button class="iconbtn" data-act="board" title="Open in board">⊞</button>`);
-  if (isActive) actBtns.push(`<button class="iconbtn" data-act="start" title="Start iteration: dispatch all todo tasks to their agents">▷</button>`);
+  if (isActive && !isStarted) actBtns.push(`<button class="iconbtn" data-act="start" title="Start iteration: dispatch all todo tasks to their agents">▷</button>`);
+  if (isActive && isStarted) actBtns.push(`<button class="iconbtn" data-act="restart" title="Re-dispatch: queue any new todo tasks added after the first start (force re-run)">↻</button>`);
   if (isActive) actBtns.push(`<button class="iconbtn" data-act="finalize" title="Finalize iteration: review checklist + merge auto/iter-${escapeHtml(String(it.id))} into a target branch">✓</button>`);
   actBtns.push(`<button class="iconbtn" data-act="edit" title="Edit">✎</button>`);
   if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
@@ -206,7 +208,8 @@ function renderIterRow(tr, it) {
     if (act === 'activate') activateIter(tr.slug, it.id);
     else if (act === 'edit') openIterForm(tr.slug, it.id);
     else if (act === 'archive') archiveIter(tr.slug, it.id);
-    else if (act === 'start') startIter(tr.slug, it.id);
+    else if (act === 'start') startIter(tr.slug, it.id, false);
+    else if (act === 'restart') startIter(tr.slug, it.id, true);
     else if (act === 'finalize') openFinalizeModal(tr.slug, it.id);
     else if (act === 'delete') deleteIter(tr.slug, it.id);
     else if (act === 'board') {
@@ -376,15 +379,17 @@ async function deleteIter(track, id) {
 
 // ─── Auto-iteration close + checklist ──────────────────────────────────────
 
-async function startIter(track, id) {
+async function startIter(track, id, force = false) {
   if (!await confirmModal({
-    title: 'Start iteration',
-    message: `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(id)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
-    confirmText: 'Dispatch all',
+    title: force ? 'Re-dispatch iteration' : 'Start iteration',
+    message: force
+      ? `Re-dispatch every <b>todo</b> task in iter <b>${escapeHtml(id)}</b>? Already-running tasks are untouched; this picks up todos added after the first start.`
+      : `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(id)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
+    confirmText: force ? 'Re-dispatch' : 'Dispatch all',
   })) return;
   try {
     const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/start`, {
-      method: 'POST', body: JSON.stringify({}),
+      method: 'POST', body: JSON.stringify(force ? { force: true } : {}),
     });
     const skipped = (r.skipped || []).length;
     const queued = (r.queued || []).length;
@@ -402,11 +407,11 @@ async function startIter(track, id) {
 
 // ─── Finalize iteration modal ─────────────────────────────────────────────
 //
-// Surfaces everything the user needs before merging an iteration's branch
-// into a main-line target: per-task "How to verify" as ticky checkboxes,
-// auto-verify summary, target branch dropdown, ack-incomplete checkbox.
-// Submitting calls /finalize → server salvage-commits, merges --no-ff, tears
-// down the iter worktree, and marks the iteration done.
+// Verification surface for an iteration. Server already committed each task
+// as it passed (manual approve → handleVerify, auto-verify pass → server
+// commit + done). Finalize itself is now: tick off "How to verify" steps
+// per task, optionally bulk-promote leftover passed-auto tasks to done,
+// generate CHECKLIST.md. No git merge here.
 
 async function openFinalizeModal(track, id) {
   let info;
@@ -419,8 +424,6 @@ async function openFinalizeModal(track, id) {
 
   const tasks = info.tasks || [];
   const incomplete = info.incomplete || [];
-  const branches = info.branches || [];
-  const suggested = info.suggested_target || info.root_branch || 'main';
   const closed = tasks.filter(t => t.status === 'done' || t.status === 'passed-auto');
 
   const checklistState = []; // [{taskId, line, checked}]
@@ -478,13 +481,12 @@ async function openFinalizeModal(track, id) {
       <ul class="fin-warn-list">
         ${incomplete.map(t => `<li><span class="mono">${escapeHtml(t.id)}</span> · ${escapeHtml(t.status)} · ${escapeHtml(t.title)}</li>`).join('')}
       </ul>
-      <label class="fin-ack"><input type="checkbox" id="fin-ack"> I understand and want to merge anyway. These tasks stay on <code>${escapeHtml(info.iteration.branch)}</code>.</label>
+      <label class="fin-ack"><input type="checkbox" id="fin-ack"> I understand. Closing the iteration anyway leaves these tasks behind.</label>
     </div>
   ` : '';
 
-  const branchOptions = branches.map(b => `<option value="${escapeHtml(b)}"${b === suggested ? ' selected' : ''}>${escapeHtml(b)}</option>`).join('');
   const rootInfo = info.root_branch
-    ? `<div class="fin-root muted">ROOT is on <code>${escapeHtml(info.root_branch)}</code>${info.root_dirty ? ' · <span class="fin-dirty">dirty</span>' : ''}</div>`
+    ? `<div class="fin-root muted">ROOT branch: <code>${escapeHtml(info.root_branch)}</code></div>`
     : '';
 
   const totalItems = () => checklistState.filter(it => !it.autoOnly).length;
@@ -494,7 +496,7 @@ async function openFinalizeModal(track, id) {
   const body = `
     <div class="fin-head">
       <div><b>iter ${escapeHtml(info.iteration.id)}</b>${info.iteration.title ? ` · ${escapeHtml(info.iteration.title)}` : ''}</div>
-      <div class="muted mono">branch: ${escapeHtml(info.iteration.branch)}</div>
+      ${rootInfo}
     </div>
 
     <div class="fin-section">
@@ -503,46 +505,33 @@ async function openFinalizeModal(track, id) {
     </div>
 
     <div class="fin-section">
-      <div class="fin-section-head">Auto-verify summary</div>
+      <div class="fin-section-head">Iteration summary</div>
       <div class="fin-summary">${renderSummary()}</div>
     </div>
 
     ${incompleteBlock}
-
-    <div class="fin-section">
-      <div class="fin-section-head">Merge target</div>
-      <div class="fin-target-row">
-        <select id="fin-target" class="form-input">${branchOptions || '<option value="">(no branches)</option>'}</select>
-        ${rootInfo}
-      </div>
-      <textarea id="fin-summary" class="form-input fin-summary-input" placeholder="optional: what shipped in this iteration (goes into the merge commit)"></textarea>
-    </div>
   `;
 
   openFormModal(`Finalize iteration ${id}`, body, async () => {
-    const target = document.getElementById('fin-target')?.value?.trim();
-    if (!target) { toast('pick a target branch', 'error'); return; }
     const ackEl = document.getElementById('fin-ack');
     const ackIncomplete = !!(ackEl && ackEl.checked);
     if (incomplete.length && !ackIncomplete) { toast('confirm incomplete tasks first', 'error'); return; }
     if (totalItems() > 0 && checkedItems() < totalItems()) {
       const yes = await confirmModal({
         title: 'Checklist not fully verified',
-        message: `${checkedItems()} of ${totalItems()} items ticked. Merge anyway?`,
-        confirmText: 'Merge anyway',
+        message: `${checkedItems()} of ${totalItems()} items ticked. Close iteration anyway?`,
+        confirmText: 'Close anyway',
       });
       if (!yes) return;
     }
-    const summary = document.getElementById('fin-summary')?.value?.trim() || '';
     const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/finalize`, {
-      method: 'POST', body: JSON.stringify({
-        target_branch: target, summary, ack_incomplete: ackIncomplete,
-      }),
+      method: 'POST', body: JSON.stringify({ ack_incomplete: ackIncomplete }),
     });
     closeFormModal();
-    toast(`merged into ${escapeHtml(r.target)} (${r.merged_in})`, 'success');
+    const closedCount = (r.closed || []).length;
+    toast(`iteration finalized · ${closedCount} task${closedCount === 1 ? '' : 's'} closed`, 'success');
     await refresh();
-  }, { size: 'xl', confirmText: 'Finalize & merge' });
+  }, { size: 'xl', confirmText: 'Finalize iteration' });
 
   // Live checkbox / progress wiring.
   const root = document.getElementById('form-body');
