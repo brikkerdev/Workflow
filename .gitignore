@@ -7,3 +7,8 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/settings.local.json
+
+# Auto-verify worktrees and runtime queues — runtime artifacts under .workflow.
+.workflow/worktrees/
+.workflow/verify_queue/
+.workflow/tmp/

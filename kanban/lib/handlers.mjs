@@ -402,6 +402,12 @@ export function handleTask(res, tid, query = {}) {
       verify, // verification steps for the agent's awareness
     };
     if (context) out.context = context;
+    // Auto-verify hints: agent must work inside worktree_path and call the
+    // auto_verify_* MCP tools instead of submit_for_verify.
+    if (fm.auto_verify === 'true' || fm.auto_verify === true) out.auto_verify = true;
+    if (fm.worktree_path) out.worktree_path = fm.worktree_path;
+    if (Array.isArray(fm.expected_files) && fm.expected_files.length) out.expected_files = fm.expected_files;
+    if (fm.unity_verify === 'true' || fm.unity_verify === true) out.unity_verify = true;
     return sendJson(res, 200, out);
   }
 
@@ -1081,6 +1087,7 @@ export async function handleNextTask(req, res) {
   const hints = callerInst ? {
     preferIteration: callerInst.last_iteration || null,
     preferTrack: callerInst.last_track || null,
+    recentFiles: Array.isArray(callerInst.recent_files) ? callerInst.recent_files : null,
   } : null;
   const trig = popNextForAssignee(assignee, instanceId, hints);
   if (!trig) {
@@ -1106,11 +1113,19 @@ export async function handleNextTask(req, res) {
     claimTaskForInstance(instanceId, trig.task_id);
     // Track iteration/track of the just-claimed task so subsequent picks
     // prefer same-iteration / same-track work and reuse the warm context.
+    // recent_files seeds affinity for the NEXT pickup — when the agent finishes
+    // this task its expected_files are files it just touched, so ranking the
+    // next trigger by overlap with those keeps related work on the same agent.
     const iter = trig.iteration || r.fm.iteration || null;
     const track = trig.track || r.fm.track || null;
-    if (iter || track) {
-      updateInstance(instanceId, { last_iteration: iter, last_track: track });
-    }
+    const expected = Array.isArray(trig.expected_files) && trig.expected_files.length
+      ? trig.expected_files
+      : (Array.isArray(r.fm.expected_files) ? r.fm.expected_files : null);
+    const patch = {};
+    if (iter) patch.last_iteration = iter;
+    if (track) patch.last_track = track;
+    if (expected && expected.length) patch.recent_files = expected;
+    if (Object.keys(patch).length) updateInstance(instanceId, patch);
   }
   return sendJson(res, 200, {
     task_id: trig.task_id,
