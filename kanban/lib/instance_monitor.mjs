@@ -99,7 +99,10 @@ async function tick() {
 
     // Auto-respawn cleanly-exited idle instances when new work appears for their agent.
     if (inst.status === 'idle_exited') {
-      if (peekNextForAssignee(inst.agent)) {
+      if (peekNextForAssignee(inst.agent, {
+        preferIteration: inst.last_iteration || null,
+        preferTrack: inst.last_track || null,
+      })) {
         logger.info('monitor', `respawning idle ${inst.agent} (instance ${inst.id}) — queue has work`);
         removeInstance(inst.id);
         await spawnFresh(inst.agent);

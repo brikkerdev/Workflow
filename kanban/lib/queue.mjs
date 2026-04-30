@@ -33,21 +33,47 @@ export function deleteTrigger(tid) {
   return true;
 }
 
-// Atomically claim the oldest queued trigger whose assignee matches.
-// Uses rename to a temp suffix so concurrent callers cannot grab the same one.
-// Returns the trigger payload (with task_id) or null.
-export function popNextForAssignee(assignee, instanceId) {
-  if (!exists(QUEUE_DIR)) return null;
-  const tag = String(instanceId || `pid${process.pid}`).replace(/[^a-z0-9-]/gi, '_');
+// Score a trigger against caller hints. Higher = better fit for the agent's
+// already-warm context. 0 means "no affinity, FIFO order applies".
+//   iteration match → strongest signal (same goal, same plan)
+//   track match     → weaker but still saves re-reading the spec
+function affinityScore(trig, hints) {
+  if (!hints) return 0;
+  let s = 0;
+  if (hints.preferIteration && trig.iteration && trig.iteration === hints.preferIteration) s += 100;
+  if (hints.preferTrack && trig.track && trig.track === hints.preferTrack) s += 10;
+  return s;
+}
+
+// Pick the best candidate for an assignee from the queue, respecting context
+// affinity hints. Falls back to FIFO (filename sort) when nothing matches.
+function rankCandidates(assignee, hints) {
+  if (!exists(QUEUE_DIR)) return [];
   const names = fs.readdirSync(QUEUE_DIR)
     .filter(n => n.endsWith('.json'))
-    .sort();
-  for (const n of names) {
-    const src = path.join(QUEUE_DIR, n);
+    .sort(); // FIFO baseline (filenames are time-prefixed task ids)
+  const out = [];
+  for (let i = 0; i < names.length; i++) {
+    const n = names[i];
     let trig;
-    try { trig = JSON.parse(readText(src)); } catch { continue; }
+    try { trig = JSON.parse(readText(path.join(QUEUE_DIR, n))); } catch { continue; }
     if (assignee && trig.assignee !== assignee) continue;
-    const claimed = path.join(QUEUE_DIR, `${n}.claimed-${tag}-${Date.now()}`);
+    out.push({ name: n, trig, score: affinityScore(trig, hints), order: i });
+  }
+  out.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+  return out;
+}
+
+// Atomically claim the next trigger for assignee. Hints bias selection toward
+// tasks whose iteration/track matches the instance's recent work so the agent
+// reuses already-loaded context. Concurrent callers race via rename.
+export function popNextForAssignee(assignee, instanceId, hints = null) {
+  const ranked = rankCandidates(assignee, hints);
+  if (!ranked.length) return null;
+  const tag = String(instanceId || `pid${process.pid}`).replace(/[^a-z0-9-]/gi, '_');
+  for (const { name, trig } of ranked) {
+    const src = path.join(QUEUE_DIR, name);
+    const claimed = path.join(QUEUE_DIR, `${name}.claimed-${tag}-${Date.now()}`);
     try { fs.renameSync(src, claimed); }
     catch { continue; } // someone else got it
     try { fs.unlinkSync(claimed); } catch {}
@@ -56,19 +82,12 @@ export function popNextForAssignee(assignee, instanceId) {
   return null;
 }
 
-// Peek the next queued trigger for an assignee without removing it.
-export function peekNextForAssignee(assignee) {
-  if (!exists(QUEUE_DIR)) return null;
-  const names = fs.readdirSync(QUEUE_DIR)
-    .filter(n => n.endsWith('.json'))
-    .sort();
-  for (const n of names) {
-    let trig;
-    try { trig = JSON.parse(readText(path.join(QUEUE_DIR, n))); } catch { continue; }
-    if (assignee && trig.assignee !== assignee) continue;
-    return trig;
-  }
-  return null;
+// Peek the next queued trigger for an assignee without removing it. Honors the
+// same affinity hints as popNextForAssignee so the loop_stop "next task" hint
+// matches what handleNextTask will actually claim.
+export function peekNextForAssignee(assignee, hints = null) {
+  const ranked = rankCandidates(assignee, hints);
+  return ranked.length ? ranked[0].trig : null;
 }
 
 export function writeTrigger(tid, fm, taskPath, opts = {}) {

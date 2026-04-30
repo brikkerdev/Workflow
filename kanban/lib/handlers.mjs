@@ -1026,7 +1026,10 @@ export async function handleAgentLoopDecide(req, res) {
   if (inst.status === 'exiting' || inst.respawn_requested) {
     return sendJson(res, 200, { decision: 'allow', reason: inst.exit_reason || 'exiting' });
   }
-  const next = peekNextForAssignee(inst.agent);
+  const next = peekNextForAssignee(inst.agent, {
+    preferIteration: inst.last_iteration || null,
+    preferTrack: inst.last_track || null,
+  });
   if (next) {
     updateInstance(id, { status: 'working' });
     return sendJson(res, 200, {
@@ -1057,7 +1060,12 @@ export async function handleNextTask(req, res) {
   const assignee = String(payload.assignee || '').trim();
   const instanceId = String(payload.instance_id || '').trim();
   if (!assignee) return sendJson(res, 400, { error: 'assignee required' });
-  const trig = popNextForAssignee(assignee, instanceId);
+  const callerInst = instanceId ? getInstance(instanceId) : null;
+  const hints = callerInst ? {
+    preferIteration: callerInst.last_iteration || null,
+    preferTrack: callerInst.last_track || null,
+  } : null;
+  const trig = popNextForAssignee(assignee, instanceId, hints);
   if (!trig) {
     if (instanceId) updateInstance(instanceId, { status: 'idle', current_task_id: null });
     return sendJson(res, 200, { empty: true });
@@ -1079,6 +1087,13 @@ export async function handleNextTask(req, res) {
       updateInstance(instanceId, { protocol_sent: true });
     }
     claimTaskForInstance(instanceId, trig.task_id);
+    // Track iteration/track of the just-claimed task so subsequent picks
+    // prefer same-iteration / same-track work and reuse the warm context.
+    const iter = trig.iteration || r.fm.iteration || null;
+    const track = trig.track || r.fm.track || null;
+    if (iter || track) {
+      updateInstance(instanceId, { last_iteration: iter, last_track: track });
+    }
   }
   return sendJson(res, 200, {
     task_id: trig.task_id,
