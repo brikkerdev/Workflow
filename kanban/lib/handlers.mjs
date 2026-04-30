@@ -9,6 +9,7 @@ import {
 } from './config.mjs';
 import { provisionWorktree, destroyWorktree, branchName, worktreePath } from './worktrees.mjs';
 import { enqueueVerify, listJobs as listVerifyJobs } from './verify_queue.mjs';
+import { closeIteration as runCloseIteration } from './iteration_close.mjs';
 import {
   exists, readText, rel,
   listTrackSlugs, readTrack, writeTrackReadme, trackActive, setTrackActive,
@@ -1216,6 +1217,43 @@ export async function handleHowToVerify(req, res, tid) {
 // GET /api/verify-queue — diagnostics for the UI / monitor.
 export function handleVerifyQueueList(res) {
   return sendJson(res, 200, { jobs: listVerifyJobs() });
+}
+
+// POST /api/track/:slug/iteration/:id/close-auto
+// Auto-iteration close ritual: merge task branches into iter/<id>, write
+// CHECKLIST.md. Does NOT merge into main — that gate is the user's job.
+export async function handleIterCloseAuto(req, res, trackSlug, iterId) {
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const r = runCloseIteration(trackSlug, iterId, payload || {});
+  if (!r.ok) return sendJson(res, 409, { error: r.error });
+  return sendJson(res, 200, r);
+}
+
+// GET /api/track/:slug/iteration/:id/checklist — raw CHECKLIST.md.
+export function handleIterChecklistRead(res, trackSlug, iterId) {
+  const dir = path.join(TRACKS_DIR, trackSlug, 'iterations');
+  if (!exists(dir)) return sendJson(res, 404, { error: 'track has no iterations' });
+  const match = fs.readdirSync(dir).find(n => n.startsWith(`${iterId}-`));
+  if (!match) return sendJson(res, 404, { error: 'iteration not found' });
+  const f = path.join(dir, match, 'CHECKLIST.md');
+  if (!exists(f)) return sendJson(res, 404, { error: 'no checklist — close iteration first' });
+  return sendJson(res, 200, { content: readText(f), path: rel(f) });
+}
+
+// PUT /api/track/:slug/iteration/:id/checklist  body: { content }
+// Persists the user's check-off state. The frontend posts the whole markdown.
+export async function handleIterChecklistWrite(req, res, trackSlug, iterId) {
+  const dir = path.join(TRACKS_DIR, trackSlug, 'iterations');
+  if (!exists(dir)) return sendJson(res, 404, { error: 'track has no iterations' });
+  const match = fs.readdirSync(dir).find(n => n.startsWith(`${iterId}-`));
+  if (!match) return sendJson(res, 404, { error: 'iteration not found' });
+  let payload; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const content = String(payload.content || '');
+  if (!content) return sendJson(res, 400, { error: 'content required' });
+  const f = path.join(dir, match, 'CHECKLIST.md');
+  fs.writeFileSync(f, content, 'utf-8');
+  return sendJson(res, 200, { ok: true, path: rel(f) });
 }
 
 // Apply a finished verify_queue job's outcome to the task. Called by the

@@ -184,6 +184,70 @@ const tools = [
     }),
   },
   {
+    name: 'workflow_unity_log_mark',
+    description: 'Snapshot the current Unity Editor.log offset. Save the result and pass it to workflow_unity_log_since after running an action so you only see lines your action produced (not other agents).',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => {
+      const { logMark } = await import('../lib/unity_log.mjs');
+      return logMark();
+    },
+  },
+  {
+    name: 'workflow_unity_log_since',
+    description: 'Read Unity Editor.log lines appended since a prior mark. Optional grep regex filter. Returns { lines, errors, warnings }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mark: { type: 'object', description: 'Result of workflow_unity_log_mark' },
+        grep: { type: 'string', description: 'Optional regex (case-insensitive) to filter lines' },
+        limit: { type: 'integer', minimum: 1, default: 200 },
+      },
+      required: ['mark'],
+    },
+    handler: async ({ mark, grep, limit = 200 }) => {
+      const { readLogSince, classifyLines } = await import('../lib/unity_log.mjs');
+      const lines = readLogSince(mark, { grep, limit });
+      const cls = classifyLines(lines);
+      return { lines, errors: cls.errors, warnings: cls.warnings };
+    },
+  },
+  {
+    name: 'workflow_auto_verify_start',
+    description: 'Mark task as auto-verifying (you finished editing and are about to run your self-checks). Increments attempt counter.',
+    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
+    handler: async ({ task_id }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/auto-verify-start`, {}),
+  },
+  {
+    name: 'workflow_auto_verify_result',
+    description: 'Submit auto-verify outcome. passed=true → passed-auto. needs_unity=true with unity_payload (argv etc.) enqueues a Unity verify job under unity_editor lock. passed=false → rework or red-auto if attempts exhausted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        passed: { type: 'boolean' },
+        log: { type: 'string' },
+        needs_unity: { type: 'boolean' },
+        unity_payload: { type: 'object', description: '{ argv: [...], cwd?, timeout_ms?, log_grep? }' },
+      },
+      required: ['task_id'],
+    },
+    handler: async ({ task_id, passed = false, log = '', needs_unity = false, unity_payload }) => {
+      return api('POST', `/api/task/${encodeURIComponent(task_id)}/auto-verify-result`, {
+        passed, log, needs_unity, unity_payload, instance_id: INSTANCE_ID || undefined,
+      });
+    },
+  },
+  {
+    name: 'workflow_set_how_to_verify',
+    description: 'Replace the "How to verify" section of the task with a user-facing checklist. Call this AFTER auto-verify passes — the user reads this to manually validate runtime behavior.',
+    inputSchema: {
+      type: 'object',
+      properties: { task_id: { type: 'string' }, content: { type: 'string' } },
+      required: ['task_id', 'content'],
+    },
+    handler: async ({ task_id, content }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/how-to-verify`, { content }),
+  },
+  {
     name: 'workflow_next_task',
     description: 'Pop next queued task for this agent and atomically claim it. Use inside the spawned-agent loop. Returns { empty: true } if queue empty, otherwise { task_id, status, attempts }.',
     inputSchema: {

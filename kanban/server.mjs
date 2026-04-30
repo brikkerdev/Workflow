@@ -21,6 +21,7 @@ import {
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
   handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleVerifyQueueList,
+  handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite,
   applyVerifyJobResult,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
@@ -29,6 +30,7 @@ import {
 import { startInstanceMonitor } from './lib/instance_monitor.mjs';
 import { startStatsPoller } from './lib/stats_poller.mjs';
 import { startVerifyWorker, registerRunner, deleteJob as deleteVerifyJob } from './lib/verify_queue.mjs';
+import { unityRunner } from './lib/unity_runner.mjs';
 
 function matchAttachment(p) {
   const m = /^\/api\/task\/([^/]+)\/attachments(?:\/(.+))?$/.exec(p);
@@ -71,6 +73,8 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleAgent(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrack(res, decodeURIComponent(m[1]));
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleIterChecklistRead(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
       const att = matchAttachment(p);
       if (att) {
@@ -119,17 +123,21 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iterations\/reorder$/.exec(p);
       if (m) return handleIterReorder(req, res, decodeURIComponent(m[1]));
-      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive)$/.exec(p);
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto)$/.exec(p);
       if (m) {
         const ts = decodeURIComponent(m[1]); const iid = decodeURIComponent(m[2]); const action = m[3];
         if (action === 'activate') return handleIterActivate(res, ts, iid);
         if (action === 'archive') return handleIterArchive(req, res, ts, iid);
+        if (action === 'close-auto') return handleIterCloseAuto(req, res, ts, iid);
       }
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/tasks$/.exec(p);
       if (m) return handleTaskCreate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
       const att = matchAttachment(p);
       if (att && !att.name) return handleUploadAttachment(req, res, att.tid);
+    } else if (req.method === 'PUT') {
+      let m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleIterChecklistWrite(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
     } else if (req.method === 'PATCH') {
       let m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrackUpdate(req, res, decodeURIComponent(m[1]));
@@ -183,13 +191,7 @@ server.listen(args.port, args.host);
 startInstanceMonitor();
 startStatsPoller();
 
-// Default Unity runner stub. Real runner is registered by mcp/unity_proxy.mjs
-// when it boots — until then jobs fail soft so the rework loop can decide.
-registerRunner('unity', async (job) => ({
-  passed: false,
-  log: 'no Unity runner registered — start unity proxy MCP to enable auto-verify',
-  error: 'no_unity_runner',
-}));
+registerRunner('unity', unityRunner);
 
 startVerifyWorker((job, result) => {
   try {
