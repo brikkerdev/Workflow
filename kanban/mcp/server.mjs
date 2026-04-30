@@ -78,6 +78,8 @@ function compactBrief(b) {
 const idArg = { task_id: { type: 'string' } };
 
 const PROTOCOL = [
+  'LANGUAGE: All free-text you produce — Notes, How to verify, auto-verify logs, commit summaries — must be in Russian. Not Ukrainian, not English. Code identifiers, file paths, and shell commands stay as they are.',
+  '',
   '1. workflow_claim_task(id) — sets in-progress, returns brief + rework notes if any.',
   '2. Plan your work via the built-in TodoWrite tool and tick items off as you',
   '   go. A hook auto-mirrors your todo list into the task\'s "Subtasks" section,',
