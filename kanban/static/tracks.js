@@ -132,6 +132,7 @@ function renderIterRow(tr, it) {
   const actBtns = [];
   if (isPlanned) actBtns.push(`<button class="iconbtn" data-act="activate" title="Activate">▶</button>`);
   if (isActive) actBtns.push(`<button class="iconbtn" data-act="board" title="Open in board">⊞</button>`);
+  if (isActive) actBtns.push(`<button class="iconbtn" data-act="close-auto" title="Close auto-iteration: merge task branches and open verify checklist">✓</button>`);
   actBtns.push(`<button class="iconbtn" data-act="edit" title="Edit">✎</button>`);
   if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
   if (it.status !== 'done' && it.status !== 'abandoned') actBtns.push(`<button class="iconbtn" data-act="archive" title="Archive (close as done)">⌫</button>`);
@@ -204,6 +205,7 @@ function renderIterRow(tr, it) {
     if (act === 'activate') activateIter(tr.slug, it.id);
     else if (act === 'edit') openIterForm(tr.slug, it.id);
     else if (act === 'archive') archiveIter(tr.slug, it.id);
+    else if (act === 'close-auto') closeAutoIter(tr.slug, it.id);
     else if (act === 'delete') deleteIter(tr.slug, it.id);
     else if (act === 'board') {
       STATE.boardTrack = tr.slug;
@@ -368,6 +370,129 @@ async function deleteIter(track, id) {
     toast(`iter ${id} deleted`, 'success');
     await refresh();
   } catch (e) { toast(`delete failed: ${e.message}`, 'error'); }
+}
+
+// ─── Auto-iteration close + checklist ──────────────────────────────────────
+
+async function closeAutoIter(track, id) {
+  if (!await confirmModal({
+    title: 'Close auto-iteration',
+    message: `Merge task branches into <code>auto/iter-${escapeHtml(id)}</code> and generate the verification checklist? This does NOT merge into main.`,
+    confirmText: 'Close & build checklist',
+  })) return;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/close-auto`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    const conflicts = (r.conflicts || []).length;
+    const needs = (r.needs_attention || []).length;
+    toast(`merged ${r.merged} · conflicts ${conflicts} · red ${needs}`, conflicts || needs ? 'error' : 'success');
+    await openIterChecklist(track, id);
+  } catch (e) { toast(`close failed: ${e.message}`, 'error'); }
+}
+
+// Parse markdown checklist lines into a tree of headings + items.
+function parseChecklistMd(md) {
+  const lines = md.split('\n');
+  const out = []; // [{ kind: 'h'|'item'|'p', level, text, checked? }]
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    let m;
+    if ((m = /^(#{1,4})\s+(.+?)\s*$/.exec(ln))) {
+      out.push({ kind: 'h', level: m[1].length, text: m[2] });
+    } else if ((m = /^([-*])\s+\[( |x|X)\]\s+(.+?)\s*$/.exec(ln))) {
+      out.push({ kind: 'item', text: m[3], checked: m[2].toLowerCase() === 'x', _orig: ln });
+    } else if (ln.trim()) {
+      out.push({ kind: 'p', text: ln });
+    } else {
+      out.push({ kind: 'br' });
+    }
+  }
+  return out;
+}
+
+function renderChecklistHtml(nodes) {
+  const parts = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.kind === 'h') {
+      parts.push(`<h${Math.min(n.level + 1, 6)} class="ck-h">${escapeHtml(n.text)}</h${Math.min(n.level + 1, 6)}>`);
+    } else if (n.kind === 'item') {
+      parts.push(`<label class="ck-item"><input type="checkbox" data-idx="${i}" ${n.checked ? 'checked' : ''}> <span>${escapeHtml(n.text)}</span></label>`);
+    } else if (n.kind === 'p') {
+      parts.push(`<div class="ck-p">${escapeHtml(n.text)}</div>`);
+    } else {
+      parts.push('<div class="ck-br"></div>');
+    }
+  }
+  return parts.join('');
+}
+
+function checklistToMd(nodes) {
+  const lines = [];
+  for (const n of nodes) {
+    if (n.kind === 'h') lines.push(`${'#'.repeat(n.level)} ${n.text}`);
+    else if (n.kind === 'item') lines.push(`- [${n.checked ? 'x' : ' '}] ${n.text}`);
+    else if (n.kind === 'p') lines.push(n.text);
+    else lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function openIterChecklist(track, id) {
+  let r;
+  try {
+    r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/checklist`);
+  } catch (e) {
+    toast(`no checklist: ${e.message}`, 'error');
+    return;
+  }
+  let nodes = parseChecklistMd(r.content || '');
+  const totalItems = () => nodes.filter(n => n.kind === 'item').length;
+  const checkedItems = () => nodes.filter(n => n.kind === 'item' && n.checked).length;
+
+  const renderBody = () => `
+    <div class="ck-progress">${checkedItems()} / ${totalItems()} verified</div>
+    <div class="ck-list">${renderChecklistHtml(nodes)}</div>
+  `;
+
+  openFormModal(`Verify checklist · iter ${id}`, renderBody(), async () => {
+    const md = checklistToMd(nodes);
+    await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/checklist`, {
+      method: 'PUT', body: JSON.stringify({ content: md }),
+    });
+    if (totalItems() > 0 && checkedItems() === totalItems()) {
+      // All boxes ticked — offer to mark iteration done.
+      closeFormModal();
+      const yes = await confirmModal({
+        title: 'All verified',
+        message: `Every checklist item is ticked. Mark iter <b>${escapeHtml(id)}</b> as <b>done</b>?`,
+        confirmText: 'Mark done',
+      });
+      if (yes) {
+        await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/archive`, {
+          method: 'POST', body: JSON.stringify({ status: 'done' }),
+        });
+        toast(`iter ${id} done`, 'success');
+        await refresh();
+      }
+    } else {
+      toast('checklist saved', 'success');
+      closeFormModal();
+    }
+  }, { size: 'lg', confirmText: 'Save' });
+
+  // Wire checkbox toggles to update local state and progress counter live.
+  const body = document.getElementById('form-body');
+  body.addEventListener('change', (e) => {
+    const cb = e.target.closest('input[type=checkbox][data-idx]');
+    if (!cb) return;
+    const idx = Number(cb.dataset.idx);
+    if (Number.isNaN(idx) || !nodes[idx]) return;
+    nodes[idx].checked = cb.checked;
+    const prog = body.querySelector('.ck-progress');
+    if (prog) prog.textContent = `${checkedItems()} / ${totalItems()} verified`;
+  });
 }
 
 async function reorderIters(track, fromId, toId) {

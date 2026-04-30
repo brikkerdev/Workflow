@@ -2161,3 +2161,13 @@ select.input {
 [data-density="compact"] .column-body { gap: 4px; padding: 6px; }
 [data-density="compact"] .iter-row { padding: 5px 8px; }
 [data-density="compact"] .track-head { padding: 10px 14px; }
+
+/* Auto-iteration verify checklist */
+.ck-progress { font-size: 12px; color: var(--fg-2); margin-bottom: 8px; }
+.ck-h { margin: 14px 0 6px; font-size: 13px; }
+.ck-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; cursor: pointer; }
+.ck-item input { margin-top: 2px; }
+.ck-item span { line-height: 1.4; }
+.ck-p { color: var(--fg-2); font-size: 12px; padding: 2px 0; }
+.ck-br { height: 6px; }
+.ck-list { max-height: 60vh; overflow-y: auto; }
