@@ -492,6 +492,8 @@ select.select-native:hover { border-color: var(--line-1); }
   color: #FFFFFF;
 }
 .btn-lg { height: 32px; padding: 0 14px; }
+.btn-sm { height: 22px; padding: 0 8px; font-size: 11px; }
+.board-iter-actions { margin-left: auto; display: inline-flex; gap: 6px; }
 
 /* ============ status dot ============ */
 .dot {

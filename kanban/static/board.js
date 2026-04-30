@@ -299,8 +299,13 @@ function buildBoardHeader(iter) {
   const tasks = STATE.board.tasks || [];
   const total = tasks.length;
   const done = tasks.filter(t => t.status === 'done').length;
-  const taskPct = total ? Math.round(done * 100 / total) : 0;
+  const inProg = tasks.filter(t => t.status === 'in-progress' || t.status === 'queued').length;
+  const pct = total ? Math.round(done * 100 / total) : 0;
 
+  // Exit criteria are a separate signal — user-checked binary items in the
+  // iteration README. Show them as a side counter, not the main progress bar
+  // (otherwise the bar sits at 0% until the user manually ticks them, even
+  // when every task is done).
   let critTotal = 0, critDone = 0;
   const body = iter.readme || '';
   const m = /##\s+Exit criteria\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(body);
@@ -309,23 +314,54 @@ function buildBoardHeader(iter) {
     critTotal = lines.length;
     critDone = lines.filter(l => /\[[xX]\]/.test(l)).length;
   }
-  const critPct = critTotal ? Math.round(critDone * 100 / critTotal) : taskPct;
 
   const trackPart = track ? `<span class="board-title">${escapeHtml(track)}</span><span class="muted mono t-12">/</span>` : '';
+  const isActive = iter.status === 'active';
+  const startBtn = isActive
+    ? `<button class="btn btn-sm" id="board-start-iter" title="Dispatch every todo task in this iteration to its agent">▷ Start iteration</button>`
+    : '';
   wrap.innerHTML = `
     <div class="board-title-row">
       <span class="board-iter-glyph" style="color:var(--iter-active)">●</span>
       ${trackPart}
       <span class="board-title" style="color:var(--fg-1)">${escapeHtml(iter.id || '')} ${escapeHtml(iter.slug || '')}</span>
       <span class="board-iter-meta">— ${escapeHtml(title)}</span>
+      <span class="board-iter-actions">${startBtn}</span>
     </div>
     <div class="board-progress">
-      <span class="label">${critTotal ? 'Exit criteria' : 'Tasks'}</span>
-      <div class="progress-track"><div class="progress-fill" style="width:${critPct}%"></div></div>
-      <span>${critTotal ? `${critDone} / ${critTotal}` : `${done} / ${total}`}</span>
+      <span class="label">Tasks</span>
+      <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <span>${done} / ${total} done${inProg ? ` · ${inProg} active` : ''}${critTotal ? ` · exit ${critDone}/${critTotal}` : ''}</span>
     </div>
   `;
+  if (isActive) {
+    const btn = wrap.querySelector('#board-start-iter');
+    if (btn) btn.addEventListener('click', () => startBoardIteration(track, iter.id));
+  }
   return wrap;
+}
+
+async function startBoardIteration(track, iterId) {
+  if (!track) { toast('no track context — open a specific track to start its iteration', 'error'); return; }
+  if (!await confirmModal({
+    title: 'Start iteration',
+    message: `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
+    confirmText: 'Dispatch all',
+  })) return;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(iterId)}/start`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    const skipped = (r.skipped || []).length;
+    const queued = (r.queued || []).length;
+    if (skipped) {
+      const reasons = r.skipped.slice(0, 3).map(s => `${s.id}: ${s.reason}`).join('; ');
+      toast(`queued ${queued} · skipped ${skipped} (${reasons}${skipped > 3 ? '…' : ''})`, queued ? 'success' : 'error');
+    } else {
+      toast(`queued ${queued} tasks`, 'success');
+    }
+    await refresh();
+  } catch (e) { toast(`start failed: ${e.message}`, 'error'); }
 }
 
 function buildAggregateHeader(actives) {
