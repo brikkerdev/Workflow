@@ -612,21 +612,50 @@ export function handleCancelDispatch(res, tid) {
   sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, queue_size: queueCount() });
 }
 
-export function handleDispatch(res, tid) {
+// Internal: try to dispatch one task. Returns { ok, error?, code? } so batch
+// callers (handleIterStart) can keep going past skippable failures.
+function _dispatchInternal(tid) {
   const [p, fm, body] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'todo') return sendJson(res, 409, { error: `can dispatch only todo tasks, current: ${fm.status}` });
+  if (!p) return { ok: false, code: 404, error: 'task not found' };
+  if (fm.status !== 'todo') return { ok: false, code: 409, error: `status is ${fm.status}, not todo` };
   const assignee = fm.assignee || 'user';
-  if (assignee === 'user') return sendJson(res, 409, { error: 'assignee=user, not dispatchable' });
-  if (!listAgents().includes(assignee)) return sendJson(res, 409, { error: `agent '${assignee}' not registered in .claude/agents/` });
-  const [ok, open] = depsSatisfied(fm.deps || []);
-  if (!ok) return sendJson(res, 409, { error: `open deps: ${open.join(', ')}` });
+  if (assignee === 'user') return { ok: false, code: 409, error: 'assignee=user, not dispatchable' };
+  if (!listAgents().includes(assignee)) return { ok: false, code: 409, error: `agent '${assignee}' not registered` };
+  const [okDeps, open] = depsSatisfied(fm.deps || []);
+  if (!okDeps) return { ok: false, code: 409, error: `open deps: ${open.join(', ')}` };
   const cycle = findDepCycle(tid);
-  if (cycle.length) return sendJson(res, 409, { error: `circular dependency: ${cycle.join(' → ')}` });
+  if (cycle.length) return { ok: false, code: 409, error: `circular dep: ${cycle.join(' → ')}` };
   fm.status = 'queued';
   saveTask(p, fm, body);
   writeTrigger(tid, fm, p, { reason: 'dispatch' });
+  return { ok: true };
+}
+
+export function handleDispatch(res, tid) {
+  const r = _dispatchInternal(tid);
+  if (!r.ok) return sendJson(res, r.code || 500, { error: r.error });
   sendJson(res, 200, { queued: true, task_id: tid, queue_size: queueCount() });
+}
+
+// POST /api/track/:slug/iteration/:id/start
+// Bulk-dispatch every todo task in the iteration that is assigned to a real
+// agent. Tasks with open deps or other validation errors are skipped (not
+// fatal — the user can fix them and re-run). Returns per-task outcome so the
+// UI can show what was queued and what was skipped.
+export async function handleIterStart(req, res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  const tasks = listTasksInIteration(trackSlug, iterId);
+  const queued = [];
+  const skipped = [];
+  for (const t of tasks) {
+    if (t.status !== 'todo') { skipped.push({ id: t.id, reason: `status=${t.status}` }); continue; }
+    if (!t.assignee || t.assignee === 'user') { skipped.push({ id: t.id, reason: 'assignee=user' }); continue; }
+    const r = _dispatchInternal(t.id);
+    if (r.ok) queued.push(t.id);
+    else skipped.push({ id: t.id, reason: r.error });
+  }
+  sendJson(res, 200, { queued, skipped, queue_size: queueCount() });
 }
 
 export function handleQueueStatus(res) {

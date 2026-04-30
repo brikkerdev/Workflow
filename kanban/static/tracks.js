@@ -132,6 +132,7 @@ function renderIterRow(tr, it) {
   const actBtns = [];
   if (isPlanned) actBtns.push(`<button class="iconbtn" data-act="activate" title="Activate">▶</button>`);
   if (isActive) actBtns.push(`<button class="iconbtn" data-act="board" title="Open in board">⊞</button>`);
+  if (isActive) actBtns.push(`<button class="iconbtn" data-act="start" title="Start iteration: dispatch all todo tasks to their agents">▷</button>`);
   if (isActive) actBtns.push(`<button class="iconbtn" data-act="close-auto" title="Close auto-iteration: merge task branches and open verify checklist">✓</button>`);
   actBtns.push(`<button class="iconbtn" data-act="edit" title="Edit">✎</button>`);
   if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
@@ -205,6 +206,7 @@ function renderIterRow(tr, it) {
     if (act === 'activate') activateIter(tr.slug, it.id);
     else if (act === 'edit') openIterForm(tr.slug, it.id);
     else if (act === 'archive') archiveIter(tr.slug, it.id);
+    else if (act === 'start') startIter(tr.slug, it.id);
     else if (act === 'close-auto') closeAutoIter(tr.slug, it.id);
     else if (act === 'delete') deleteIter(tr.slug, it.id);
     else if (act === 'board') {
@@ -373,6 +375,28 @@ async function deleteIter(track, id) {
 }
 
 // ─── Auto-iteration close + checklist ──────────────────────────────────────
+
+async function startIter(track, id) {
+  if (!await confirmModal({
+    title: 'Start iteration',
+    message: `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(id)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
+    confirmText: 'Dispatch all',
+  })) return;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/start`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    const skipped = (r.skipped || []).length;
+    const queued = (r.queued || []).length;
+    if (skipped) {
+      const reasons = r.skipped.slice(0, 3).map(s => `${s.id}: ${s.reason}`).join('; ');
+      toast(`queued ${queued} · skipped ${skipped} (${reasons}${skipped > 3 ? '…' : ''})`, queued ? 'success' : 'error');
+    } else {
+      toast(`queued ${queued} tasks`, 'success');
+    }
+    await refresh();
+  } catch (e) { toast(`start failed: ${e.message}`, 'error'); }
+}
 
 async function closeAutoIter(track, id) {
   if (!await confirmModal({

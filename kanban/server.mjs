@@ -21,7 +21,7 @@ import {
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
   handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleVerifyQueueList,
-  handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite,
+  handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
   applyVerifyJobResult,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
@@ -123,12 +123,13 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iterations\/reorder$/.exec(p);
       if (m) return handleIterReorder(req, res, decodeURIComponent(m[1]));
-      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto)$/.exec(p);
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto|start)$/.exec(p);
       if (m) {
         const ts = decodeURIComponent(m[1]); const iid = decodeURIComponent(m[2]); const action = m[3];
         if (action === 'activate') return handleIterActivate(res, ts, iid);
         if (action === 'archive') return handleIterArchive(req, res, ts, iid);
         if (action === 'close-auto') return handleIterCloseAuto(req, res, ts, iid);
+        if (action === 'start') return handleIterStart(req, res, ts, iid);
       }
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/tasks$/.exec(p);
       if (m) return handleTaskCreate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));

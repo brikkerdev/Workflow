@@ -71,6 +71,32 @@ public static class WfWin {
     return found;
   }
 }
+[ComImport]
+[Guid("a5cd92ff-29be-454c-8d04-d82879fb3f1b")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IVirtualDesktopManager {
+  [PreserveSig] int IsWindowOnCurrentVirtualDesktop(IntPtr hwnd, out int onCurrent);
+  [PreserveSig] int GetWindowDesktopId(IntPtr hwnd, out Guid desktopId);
+  [PreserveSig] int MoveWindowToDesktop(IntPtr hwnd, [In] ref Guid desktopId);
+}
+public static class WfVdm {
+  static readonly Guid CLSID = new Guid("aa509086-5ca9-4c25-8f95-589d3c07b48a");
+  static IVirtualDesktopManager _vdm;
+  public static IVirtualDesktopManager Get() {
+    if (_vdm == null) {
+      Type t = Type.GetTypeFromCLSID(CLSID);
+      _vdm = (IVirtualDesktopManager)Activator.CreateInstance(t);
+    }
+    return _vdm;
+  }
+  // hresult; 0 = success.
+  public static int Move(IntPtr hwnd, Guid desktopId) {
+    return Get().MoveWindowToDesktop(hwnd, ref desktopId);
+  }
+  public static Guid CurrentDesktopOf(IntPtr hwnd) {
+    Guid g; Get().GetWindowDesktopId(hwnd, out g); return g;
+  }
+}
 "@
 }
 
@@ -237,12 +263,45 @@ function Ensure-DesktopCount {
 }
 
 function Get-DesktopCount {
-  # Heuristic: read from registry (Windows 11 stores VirtualDesktopIDs).
+  $ids = Get-DesktopGuids
+  if ($ids) { return $ids.Count }
+  return 1
+}
+
+# Returns an ordered array of [System.Guid] for every existing virtual desktop.
+# Reads HKCU:\...\Explorer\VirtualDesktops!VirtualDesktopIDs (Win10/11) — each
+# 16-byte block is a desktop GUID in registry order = Task View order.
+function Get-DesktopGuids {
   $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops'
   try {
-    $ids = (Get-ItemProperty -Path $key -Name VirtualDesktopIDs -ErrorAction Stop).VirtualDesktopIDs
-    return [int]($ids.Length / 16) # each GUID is 16 bytes
-  } catch { return 1 }
+    $bytes = (Get-ItemProperty -Path $key -Name VirtualDesktopIDs -ErrorAction Stop).VirtualDesktopIDs
+    if (-not $bytes -or ($bytes.Length % 16) -ne 0) { return @() }
+    $out = @()
+    for ($i = 0; $i -lt $bytes.Length; $i += 16) {
+      $chunk = New-Object byte[] 16
+      [Array]::Copy($bytes, $i, $chunk, 0, 16)
+      $out += [System.Guid]::new($chunk)
+    }
+    return $out
+  } catch { return @() }
+}
+
+# Move a window to desktop[idx] via the public IVirtualDesktopManager COM
+# interface. More reliable than SendKeys-based switching: works regardless of
+# focus, doesn't race with the user's keyboard. Returns $true on success.
+function Move-WindowToDesktop {
+  param([IntPtr]$hwnd, [int]$desktopIdx)
+  $guids = Get-DesktopGuids
+  if ($desktopIdx -ge $guids.Count) { Warn "desktop index $desktopIdx out of range (have $($guids.Count))"; return $false }
+  $g = $guids[$desktopIdx]
+  try {
+    $hr = [WfVdm]::Move($hwnd, $g)
+    if ($hr -ne 0) { Warn ("MoveWindowToDesktop returned HRESULT 0x{0:X8}" -f $hr); return $false }
+    return $true
+  } catch {
+    Warn "MoveWindowToDesktop threw: $_"
+    return $false
+  }
 }
 
 # --- Unity launcher --------------------------------------------------------
@@ -367,24 +426,23 @@ $desktops = @($manifest.desktops)
 if ($desktops.Count -eq 0) { Log 'no desktops in manifest - nothing to do'; exit 0 }
 
 Ensure-DesktopCount -count $desktops.Count
+# After Ensure-DesktopCount we may have just created new desktops via
+# Win+Ctrl+D. Refresh the GUID cache so MoveWindowToDesktop sees them.
+$null = Get-DesktopGuids
 
-$currentIdx = [ref] 0
-# Force ourselves to desktop 0 by repeatedly pressing left until we can't go further.
-1..10 | ForEach-Object { $wshell.SendKeys('^#{LEFT}'); Start-Sleep -Milliseconds 120 }
-
+# We no longer slide between desktops via SendKeys — instead launch every
+# window on whatever desktop the runner is currently on, capture its hwnd,
+# then re-home it via IVirtualDesktopManager. This sidesteps focus races
+# and works whether the user starts on desktop 1, 4, or anywhere in between.
 for ($i = 0; $i -lt $desktops.Count; $i++) {
   $d = $desktops[$i]
   Log "configuring desktop $i ($($d.name))"
-  Switch-ToDesktopIndex -targetIdx $i -currentIdx $currentIdx
-  Start-Sleep -Milliseconds 400
 
   foreach ($win in @($d.windows)) {
     $launch = Start-Window -win $win
     $matchTitle = Resolve-MatchTitle -win $win -launch $launch
     $procPid = if ($launch.Process) { [uint32]$launch.Process.Id } else { 0 }
     $hwnd = [IntPtr]::Zero
-    # Foreground-window heuristic from URL launch: most reliable when the URL
-    # was just opened in the default browser and grabbed focus.
     if ($launch.ForegroundHwnd -ne [IntPtr]::Zero) { $hwnd = $launch.ForegroundHwnd }
     if ($hwnd -eq [IntPtr]::Zero) {
       $hwnd = Wait-ForWindow -titleSub $matchTitle -processId $procPid -timeoutSecs $waitSecs
@@ -393,12 +451,19 @@ for ($i = 0; $i -lt $desktops.Count; $i++) {
       Warn "could not locate window for '$matchTitle' within $waitSecs s"
       continue
     }
+    # Place first (SetWindowPos works regardless of which desktop the window
+    # is on), then move to the target desktop.
     $monIdx = if ($null -ne $d.monitor) { [int]$d.monitor } else { 0 }
     $rect = Resolve-ZoneRect -zone $win.zone -monitorIdx $monIdx
     if ($rect) {
       $ok = Move-WindowToRect -hwnd $hwnd -rect $rect
       if ($ok) { Log ("placed '{0}' at {1},{2} {3}x{4}" -f $matchTitle, $rect.X, $rect.Y, $rect.W, $rect.H) }
       else { Warn "SetWindowPos failed for '$matchTitle'" }
+    }
+    if ($i -gt 0) {
+      $moved = Move-WindowToDesktop -hwnd $hwnd -desktopIdx $i
+      if ($moved) { Log "moved '$matchTitle' to desktop $i" }
+      else { Warn "could not move '$matchTitle' to desktop $i (HRESULT mismatch usually means cross-process restriction)" }
     }
   }
 }
