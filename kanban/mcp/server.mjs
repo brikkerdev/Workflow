@@ -93,8 +93,12 @@ const PROTOCOL = [
   '   criterion (paths, commands, exact expected output). It is shown at the',
   '   top of the kanban Verify panel; if it is empty or vague the user cannot',
   '   test your work. Use Edit to fill it in.',
-  '5. workflow_submit_for_verify(id, summary) — when done.',
-  'Do NOT git commit/push. Server handles that on user approval.',
+  '5. workflow_commit_task(id, summary) — commit your work in the worktree on its',
+  '   per-task branch (only for auto-verify tasks running in a worktree). Skip for',
+  '   manual tasks editing the main checkout.',
+  '6. workflow_submit_for_verify(id, summary) — when done. Server merges your',
+  '   per-task branch into the iteration branch so Unity sees the integrated work.',
+  'Do NOT push to remote. Final main merge is the user\'s call.',
 ].join('\n');
 
 const tools = [
@@ -170,6 +174,16 @@ const tools = [
       required: ['task_id', 'text'],
     },
     handler: async ({ task_id, text }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/note`, { text }),
+  },
+  {
+    name: 'workflow_commit_task',
+    description: 'Commit current worktree changes onto the task branch (auto-verify tasks only). Server formats the message as "<tid>: <title>" with optional summary, attributes the commit to the agent. No-op if there is nothing to commit. Run this before workflow_auto_verify_result(passed=true) or workflow_submit_for_verify so the server can merge your branch into the iteration branch cleanly.',
+    inputSchema: {
+      type: 'object',
+      properties: { task_id: { type: 'string' }, summary: { type: 'string' } },
+      required: ['task_id'],
+    },
+    handler: async ({ task_id, summary }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/commit-worktree`, { summary: summary || '' }),
   },
   {
     name: 'workflow_submit_for_verify',

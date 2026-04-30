@@ -20,8 +20,9 @@ import {
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
-  handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleVerifyQueueList,
+  handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleCommitWorktree, handleVerifyQueueList,
   handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
+  handleIterFinalizeInfo, handleIterFinalize,
   applyVerifyJobResult,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
@@ -75,6 +76,8 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleTrack(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
       if (m) return handleIterChecklistRead(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/finalize-info$/.exec(p);
+      if (m) return handleIterFinalizeInfo(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
       const att = matchAttachment(p);
       if (att) {
@@ -84,7 +87,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|auto-verify-start|auto-verify-result|how-to-verify)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|auto-verify-start|auto-verify-result|how-to-verify|commit-worktree)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -97,6 +100,7 @@ const server = http.createServer(async (req, res) => {
         if (action === 'auto-verify-start') return handleAutoVerifyStart(req, res, tid);
         if (action === 'auto-verify-result') return handleAutoVerifyResult(req, res, tid);
         if (action === 'how-to-verify') return handleHowToVerify(req, res, tid);
+        if (action === 'commit-worktree') return handleCommitWorktree(req, res, tid);
       }
 
       // tracks
@@ -123,13 +127,14 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iterations\/reorder$/.exec(p);
       if (m) return handleIterReorder(req, res, decodeURIComponent(m[1]));
-      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto|start)$/.exec(p);
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto|start|finalize)$/.exec(p);
       if (m) {
         const ts = decodeURIComponent(m[1]); const iid = decodeURIComponent(m[2]); const action = m[3];
         if (action === 'activate') return handleIterActivate(res, ts, iid);
         if (action === 'archive') return handleIterArchive(req, res, ts, iid);
         if (action === 'close-auto') return handleIterCloseAuto(req, res, ts, iid);
         if (action === 'start') return handleIterStart(req, res, ts, iid);
+        if (action === 'finalize') return handleIterFinalize(req, res, ts, iid);
       }
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/tasks$/.exec(p);
       if (m) return handleTaskCreate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));

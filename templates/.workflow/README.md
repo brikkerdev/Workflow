@@ -25,7 +25,7 @@ Iteration-based development board. File-based, git-friendly, cross-session.
 Одна единица работы. Имеет:
 - `id` — `T001`, `T002`, …
 - `assignee` — кто делает (`user` или имя зарегистрированного агента из `.claude/agents/`)
-- `status` — `todo` | `in-progress` | `review` | `done` | `blocked`
+- `status` — `todo` | `in-progress` | `review` | `done`
 - `deps` — список id, от которых зависит. Стартовать таск с незакрытыми deps нельзя.
 - `estimate` — `S` | `M` | `L`
 - **Goal** — одно предложение
@@ -84,7 +84,6 @@ Web-канбан с drag-drop живёт в `tools/kanban/`. Запуск: `node
 ## Правила
 
 - **Atomic status changes**. Меняй `status` после фактического перехода, не до.
-- **Blocked явно**. Если таск встал — `status: blocked`, в `Notes` причина и какой таск/решение разблокирует.
 - **How to verify обязателен**. Без него таск нельзя `dispatch`-нуть.
 - **One assignee per task**. Если работа разделяется — это два таска с deps.
 - **Отчёт агента — в Notes**. Не в сторонних файлах. Чтение таска = полная история.

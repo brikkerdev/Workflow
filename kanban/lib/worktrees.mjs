@@ -26,13 +26,12 @@ function git(args, opts = {}) {
   return { code: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
 }
 
-export function worktreePath(taskId) {
-  return path.join(WORKTREES_DIR, taskId);
+export function iterWorktreePath(iterationId) {
+  return path.join(WORKTREES_DIR, `_iter-${iterationId}`);
 }
 
-export function branchName(taskId, iterationId) {
-  const iter = iterationId ? `iter-${iterationId}` : 'task';
-  return `auto/${iter}/${taskId}`;
+export function iterationBranchName(iterationId) {
+  return `auto/iter-${iterationId}`;
 }
 
 function ensureBranch(name, baseRef) {
@@ -58,39 +57,41 @@ function symlinkDir(src, dst) {
   }
 }
 
-// Provision a worktree for taskId. Idempotent: returns existing path if
-// already provisioned. baseRef defaults to current HEAD of the main repo.
-export function provisionWorktree(taskId, opts = {}) {
+// Provision the iteration's shared worktree. All agents in the iteration
+// edit and commit here on the `auto/iter-<id>` branch — this is the only
+// checkout besides ROOT (which stays the user's). Unity is opened against
+// this worktree so it sees integrated work in real time. File-level
+// collisions between agents are serialized by the queue's expected_files
+// lock.
+export function provisionIterWorktree(iterationId, opts = {}) {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
-  const wtPath = worktreePath(taskId);
+  const wtPath = iterWorktreePath(iterationId);
+  const branch = iterationBranchName(iterationId);
   if (fs.existsSync(wtPath)) {
-    return { ok: true, path: wtPath, branch: opts.branch || null, existed: true };
+    return { ok: true, path: wtPath, branch, existed: true };
   }
-  const branch = opts.branch || branchName(taskId, opts.iteration);
+  // Branch off whatever the user currently has checked out in ROOT — projects
+  // don't always use 'main' (e.g., 'unity'). Caller can override via baseRef.
   const base = opts.baseRef || 'HEAD';
-
   const br = ensureBranch(branch, base);
   if (!br.ok) return { ok: false, error: br.error };
 
   const add = git(['worktree', 'add', wtPath, branch]);
-  if (add.code !== 0) return { ok: false, error: add.stderr || 'worktree add failed' };
+  if (add.code !== 0) return { ok: false, error: add.stderr || 'iter worktree add failed' };
 
   for (const sub of SYMLINK_DIRS) {
     const src = path.join(ROOT, sub);
     const dst = path.join(wtPath, sub);
-    if (fs.existsSync(dst)) continue; // worktree may already carry it (rare)
+    if (fs.existsSync(dst)) continue;
     symlinkDir(src, dst);
   }
-  logger.info('worktree', `provisioned ${taskId} on ${branch} at ${wtPath}`);
+  logger.info('worktree', `provisioned iter ${iterationId} on ${branch} at ${wtPath}`);
   return { ok: true, path: wtPath, branch, existed: false };
 }
 
-// Tear down. Optionally keep the branch (default) for later merge into iter.
-export function destroyWorktree(taskId, opts = {}) {
-  const wtPath = worktreePath(taskId);
+export function destroyIterWorktree(iterationId, opts = {}) {
+  const wtPath = iterWorktreePath(iterationId);
   if (!fs.existsSync(wtPath)) return { ok: true, removed: false };
-
-  // Remove symlinks first so `git worktree remove` doesn't traverse them.
   for (const sub of SYMLINK_DIRS) {
     const dst = path.join(wtPath, sub);
     try {
@@ -100,14 +101,40 @@ export function destroyWorktree(taskId, opts = {}) {
   }
   const rm = git(['worktree', 'remove', '--force', wtPath]);
   if (rm.code !== 0) {
-    // Last-resort: scrub the directory ourselves.
     try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch {}
     git(['worktree', 'prune']);
   }
-  if (opts.deleteBranch && opts.branch) {
-    git(['branch', '-D', opts.branch]);
+  if (opts.deleteBranch) {
+    git(['branch', '-D', iterationBranchName(iterationId)]);
   }
   return { ok: true, removed: true };
+}
+
+// Resolve a worktree path: explicit override only — agents must always pass
+// `fm.worktree_path` (which points at the iter worktree).
+function resolveWorktree(opts) {
+  if (!opts || !opts.worktree) return null;
+  return path.isAbsolute(opts.worktree) ? opts.worktree : path.join(ROOT, opts.worktree);
+}
+
+// Commit any uncommitted changes in the iteration worktree on its current
+// branch (`auto/iter-<id>`). Caller passes the worktree path via
+// opts.worktree. No-op when the working tree is clean.
+export function commitWorktreeWork(taskId, opts = {}) {
+  const wt = resolveWorktree(opts);
+  if (!wt) return { ok: false, error: 'worktree path required' };
+  if (!fs.existsSync(wt)) return { ok: false, error: `worktree missing: ${wt}` };
+  const status = git(['status', '--porcelain'], { cwd: wt });
+  if (status.code !== 0) return { ok: false, error: `worktree status: ${status.stderr}` };
+  if (!status.stdout.trim()) return { ok: true, committed: false };
+  const add = git(['add', '-A'], { cwd: wt });
+  if (add.code !== 0) return { ok: false, error: `worktree add: ${add.stderr}` };
+  const msg = opts.message || `${taskId}: auto commit`;
+  const args = ['commit', '-m', msg];
+  if (opts.author) args.push(`--author=${opts.author}`);
+  const c = git(args, { cwd: wt });
+  if (c.code !== 0) return { ok: false, error: `worktree commit: ${c.stderr}` };
+  return { ok: true, committed: true };
 }
 
 // List worktrees git knows about — useful for monitor reconciliation.

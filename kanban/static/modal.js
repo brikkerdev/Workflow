@@ -72,7 +72,7 @@ async function openModal(id, opts = {}) {
   // sits at the top of modal-body before any task info.
   const verifyBtn = document.getElementById('m-verify-btn');
   if (verifyBtn) verifyBtn.style.display = 'none';
-  MODAL_VERIFY_OPEN = t.status === 'verifying' || !!opts.verify;
+  MODAL_VERIFY_OPEN = t.status === 'verifying' || t.status === 'passed-auto' || t.status === 'red-auto' || !!opts.verify;
   MODAL_VERIFY_ITEMS = [];
   MODAL_VERIFY_SUMMARY = '';
   renderVerifyPanel();
@@ -249,8 +249,7 @@ function renderDepsChips() {
   picker.querySelectorAll('.chip').forEach(c => c.remove());
   const input = document.getElementById('m-deps-input');
   for (const d of MODAL_DEPS) {
-    const t = STATE.taskIndex[d];
-    const ready = t && t.status === 'done';
+    const ready = depStatusOf(d) === 'done';
     const chip = document.createElement('span');
     chip.className = `chip chip-removable ${ready ? 'chip-dep-ready' : 'chip-dep-wait'}`;
     chip.innerHTML = `${ready ? '✓' : '·'} ${escapeHtml(d)}<span class="x" title="remove">×</span>`;

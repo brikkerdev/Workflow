@@ -15,24 +15,28 @@ MCP-инструмент `workflow_next_task` сам подставит assignee
 1. Вызови `workflow_next_task()`.
 2. Если ответ `{ empty: true }` — **сразу заверши турн без лишних слов**. Stop hook сам решит: либо попросит ещё один опрос (тогда снова вызови `workflow_next_task()` и снова заверши турн), либо отпустит на выход. Когда инстанс выйдет, kanban-сервер автоматически поднимет тебя заново при появлении новых задач.
 3. Иначе — ты получил `task_id`, `brief` (компактный — пустые поля выкинуты), при первой таске в сессии ещё `protocol`, при rework — `rework`. Прочитай `protocol` (если есть), выполни `Goal` следуя `Acceptance criteria` и `How to verify`. Используй `TodoWrite` для прогресса (хук синхронит его в Subtasks).
-4. **Auto-verify ветка** (если `brief.auto_verify === true` или `brief.worktree_path` присутствует):
-   - Работай **строго в `brief.worktree_path`** — все Edit/Write/Bash используй абсолютными путями внутри этой директории. Это git worktree, изолированный от других агентов.
-   - Когда код готов: вызови `workflow_auto_verify_start(task_id)`.
+4. **Если в брифе есть `worktree_path`** (таска привязана к итерации):
+   - Работай **строго в `brief.worktree_path`** — все Edit/Write/Bash используй абсолютными путями внутри этой директории. Это общий worktree итерации на ветке `auto/iter-<id>`. Здесь же открыт Unity, через который ты можешь использовать unity-mcp — Editor видит твои сохранённые ассеты, сцены, прешты сразу.
+   - Файловые конфликты с другими агентами уже отсечены: kanban-сервер не диспатчит две таски с пересекающимися `expected_files` одновременно. Если ты не вписал `expected_files` в frontmatter — пиши, иначе тебя могут спарить с агентом который правит те же файлы.
+   - Когда код готов: `workflow_commit_task(task_id, summary?)` — сервер сделает коммит на ветке `auto/iter-<id>` с автором=твой slug, сообщение `<tid>: <title>`. Делай это перед auto-verify-result/submit.
+5. **Auto-verify** (если `brief.auto_verify === true`):
+   - `workflow_auto_verify_start(task_id)`.
    - Прогони свои проверки (lint, typecheck, build, юнит-тесты — что применимо). Результаты:
-     - **Unity-проверка нужна** (запуск редактора, play mode, runTests): вызови `workflow_auto_verify_result(task_id, { needs_unity: true, unity_payload: { argv: [...], cwd?, timeout_ms?, log_grep? } })`. Сервер поставит job в очередь под локом `unity_editor`, прогонит и сам проставит результат.
-     - **Прошло**: `workflow_auto_verify_result(task_id, { passed: true, log: "..." })`.
-     - **Не прошло**: `workflow_auto_verify_result(task_id, { passed: false, log: "что упало" })`. Сервер либо вернёт задачу в `in-progress` для rework (если попыток ещё хватает), либо запаркует как `red-auto`. На rework — исправляй и снова вызывай `workflow_auto_verify_start`.
-   - **Перед** auto-verify-result с `passed: true`: обнови `## How to verify` секцию через `workflow_set_how_to_verify(task_id, content)` — это user-facing чеклист, что юзер запустит руками после итерации (открыть сцену X, нажать Y, увидеть Z). Это НЕ команды которые ты только что прогнал — это runtime-проверки которые автомат не покрывает.
-   - Чтобы атрибутировать ошибки в общем Unity Editor.log (если играешь в editor через unity-mcp): сначала `workflow_unity_log_mark()`, потом действие, потом `workflow_unity_log_since(mark, grep?)` — увидишь только свои строки.
-5. **Manual ветка** (если auto_verify не выставлен): когда `## How to verify` готов, вызови `workflow_submit_for_verify(task_id, summary)`. Юзер approve/reject вручную.
-6. Заверши турн. Stop hook сразу скажет: следующая задача (`block` с reason "Take next workflow task: T...") или выход.
+     - **Unity-проверка нужна** (batch-режим, runTests, build-pipeline): `workflow_auto_verify_result(task_id, { needs_unity: true, unity_payload: { argv: [...], cwd?, timeout_ms?, log_grep? } })`. Сервер поставит job в очередь под локом `unity_editor` и прогонит Unity batch против iter-worktree.
+     - **Прошло**: `workflow_auto_verify_result(task_id, { passed: true, log: "..." })` → `passed-auto`.
+     - **Не прошло**: `workflow_auto_verify_result(task_id, { passed: false, log: "что упало" })` → возврат в `in-progress`, исправляй и снова коммить + start. Лимит исчерпан → `red-auto`.
+   - **Перед** auto-verify-result с `passed: true`: обнови `## How to verify` через `workflow_set_how_to_verify(task_id, content)` — user-facing чеклист (открыть сцену X, нажать Y, увидеть Z), runtime-проверки которые автомат не покрывает.
+   - Атрибуция в общем Unity Editor.log: `workflow_unity_log_mark()` → действие → `workflow_unity_log_since(mark, grep?)`.
+6. **Manual** (если `auto_verify` не выставлен): когда `## How to verify` готов и ты сделал `workflow_commit_task` — `workflow_submit_for_verify(task_id, summary)`. Юзер approve/reject вручную.
+7. Заверши турн. Stop hook сразу скажет: следующая задача (`block` с reason "Take next workflow task: T...") или выход.
 
 ## Запреты
 
-- Не делай `git commit`/`push` — сервер коммитит при approve / closeIteration.
+- В main чекаут (ROOT) ничего не пиши — это пользовательский checkout, ты его не видишь. Все правки в `worktree_path`.
+- Не делай `git push` — финальный мердж `auto/iter-<id>` в `main` это решение пользователя.
 - Не вызывай `workflow_set_subtasks` вручную — TodoWrite сам синхронится.
 - Не используй `Agent` (sub-agent) — параллельность достигается множеством инстансов в разных терминалах.
 - Не выходи через `/exit`. Просто завершай турн.
-- В auto-verify: не работай за пределами `worktree_path` — другие агенты в это время правят те же файлы в своих worktree, твои правки в основном чекауте перетрут чужие.
+- Заполняй `expected_files` в frontmatter таски при создании — это твой лок. Без него сервер не сможет разнести тебя с другими агентами по времени.
 
 Старт: `workflow_next_task()`.

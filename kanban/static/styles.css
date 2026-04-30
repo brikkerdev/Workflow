@@ -507,8 +507,11 @@ select.select-native:hover { border-color: var(--line-1); }
 .dot.s-in-progress, .dot[data-s="in-progress"] { background: var(--dot-in-progress); }
 .dot.s-queued,      .dot[data-s="queued"]      { background: var(--dot-queued); }
 .dot.s-verifying,   .dot[data-s="verifying"]   { background: var(--dot-verifying); }
+.dot.s-auto-verifying, .dot[data-s="auto-verifying"] { background: var(--dot-verifying); }
+.dot.s-awaiting-unity, .dot[data-s="awaiting-unity"] { background: var(--dot-verifying); }
+.dot.s-passed-auto, .dot[data-s="passed-auto"] { background: var(--dot-done); }
+.dot.s-red-auto,    .dot[data-s="red-auto"]    { background: var(--dot-blocked); }
 .dot.s-review,      .dot[data-s="review"]      { background: var(--dot-review); }
-.dot.s-blocked,     .dot[data-s="blocked"]     { background: var(--dot-blocked); }
 .dot.s-done,        .dot[data-s="done"]        { background: var(--dot-done); }
 .dot.pulse { animation: dotpulse 1.4s ease-in-out infinite; }
 @keyframes dotpulse {
@@ -2173,3 +2176,33 @@ select.input {
 .ck-p { color: var(--fg-2); font-size: 12px; padding: 2px 0; }
 .ck-br { height: 6px; }
 .ck-list { max-height: 60vh; overflow-y: auto; }
+
+/* Finalize iteration modal */
+.fin-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-0); margin-bottom: 12px; }
+.fin-section { margin-bottom: 16px; }
+.fin-section-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; font-weight: 600; color: var(--fg-1); margin-bottom: 6px; }
+.fin-progress { font-weight: 400; color: var(--fg-2); font-size: 11px; }
+.fin-checklist { max-height: 32vh; overflow-y: auto; border: 1px solid var(--line-0); border-radius: 4px; padding: 6px 10px; }
+.fin-task { padding: 8px 0; border-bottom: 1px dashed var(--line-0); }
+.fin-task:last-child { border-bottom: none; }
+.fin-task-head { font-size: 12px; margin-bottom: 4px; }
+.fin-item { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0 3px 12px; cursor: pointer; font-size: 12px; line-height: 1.4; }
+.fin-item input { margin-top: 2px; }
+.fin-summary { max-height: 22vh; overflow-y: auto; border: 1px solid var(--line-0); border-radius: 4px; }
+.fin-summary-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--line-0); }
+.fin-summary-row:last-child { border-bottom: none; }
+.fin-summary-tag { width: 14px; text-align: center; font-weight: 600; }
+.fin-summary-ok .fin-summary-tag { color: var(--dot-done); }
+.fin-summary-red .fin-summary-tag { color: var(--dot-blocked); }
+.fin-summary-pending .fin-summary-tag { color: var(--dot-review); }
+.fin-warn { background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.30); border-radius: 4px; padding: 10px 12px; margin-bottom: 16px; }
+.fin-warn-head { font-weight: 600; color: var(--dot-blocked); margin-bottom: 6px; }
+.fin-warn-list { margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
+.fin-warn-list li { padding: 2px 0; }
+.fin-ack { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; cursor: pointer; }
+.fin-ack input { margin-top: 2px; }
+.fin-target-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.fin-target-row select { min-width: 200px; }
+.fin-root { font-size: 11px; }
+.fin-dirty { color: var(--dot-blocked); font-weight: 600; }
+.fin-summary-input { width: 100%; min-height: 60px; resize: vertical; font-family: inherit; font-size: 12px; }

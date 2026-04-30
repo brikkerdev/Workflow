@@ -26,23 +26,21 @@ export const STATIC_DIR = path.resolve(__dirname, '..');
 //   Auto track:    todo  ->  queued  ->  in-progress  ->  auto-verifying
 //                                       (-> awaiting-unity)  ->  passed-auto -> done
 //                                       (rework loop returns to in-progress; exhaust -> red-auto)
-//   blocked is a side state any active status can park in.
 export const VALID_STATUSES = [
   'todo', 'queued', 'in-progress', 'verifying',
   'auto-verifying', 'awaiting-unity', 'passed-auto', 'red-auto',
-  'blocked', 'done',
+  'done',
 ];
 
 export const ALLOWED_TRANSITIONS = {
-  'todo':           new Set(['queued', 'in-progress', 'blocked']),
-  'queued':         new Set(['in-progress', 'todo', 'blocked']),
-  'in-progress':    new Set(['verifying', 'auto-verifying', 'queued', 'blocked', 'todo']),
+  'todo':           new Set(['queued', 'in-progress']),
+  'queued':         new Set(['in-progress', 'todo']),
+  'in-progress':    new Set(['verifying', 'auto-verifying', 'queued', 'todo']),
   'verifying':      new Set(['in-progress', 'queued', 'done', 'todo']),
   'auto-verifying': new Set(['awaiting-unity', 'passed-auto', 'red-auto', 'in-progress', 'queued']),
   'awaiting-unity': new Set(['auto-verifying', 'passed-auto', 'red-auto', 'in-progress']),
   'passed-auto':    new Set(['done', 'in-progress', 'queued', 'todo']),
   'red-auto':       new Set(['in-progress', 'queued', 'todo', 'verifying']),
-  'blocked':        new Set(['todo', 'queued', 'in-progress']),
   'done':           new Set(['todo']),
 };
 

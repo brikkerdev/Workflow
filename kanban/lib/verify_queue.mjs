@@ -40,12 +40,13 @@ export function registerRunner(kind, fn) {
 }
 
 // Producer API. Returns the job id.
-export function enqueueVerify({ taskId, kind, resourceTags = [], payload = {}, instanceId = null }) {
+export function enqueueVerify({ taskId, iteration = null, kind, resourceTags = [], payload = {}, instanceId = null }) {
   ensureDir();
   const id = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   const job = {
     id,
     task_id: taskId,
+    iteration,
     instance_id: instanceId,
     kind,
     resource_tags: Array.isArray(resourceTags) ? resourceTags : [],

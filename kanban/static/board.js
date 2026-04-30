@@ -28,7 +28,7 @@ function renderCard(t, opts = {}) {
   const isQueued = queuedIds.has(t.id) || t.status === 'queued';
   const showStart = t.status === 'todo' && !isQueued;
   const showStop = !isUser && (isQueued || t.status === 'in-progress');
-  const showVerify = t.status === 'verifying';
+  const showVerify = t.status === 'verifying' || t.status === 'passed-auto' || t.status === 'red-auto';
 
   // header
   const trackBadge = opts.showTrackBadge && t.track
@@ -37,8 +37,7 @@ function renderCard(t, opts = {}) {
 
   // meta chips
   const depChips = (t.deps || []).map(id => {
-    const dt = STATE.taskIndex[id];
-    const ok = dt && dt.status === 'done';
+    const ok = depStatusOf(id) === 'done';
     return `<span class="chip ${ok ? 'chip-dep-ready' : 'chip-dep-wait'}">${ok ? '✓' : '·'} ${escapeHtml(id)}</span>`;
   }).join('');
   const estChip = t.estimate ? `<span class="chip chip-est">${escapeHtml(t.estimate)}</span>` : '';
@@ -129,7 +128,7 @@ function buildKanbanInto(container, tasks, opts = {}) {
 
     const list = byCol[col.key];
     const empty = list.length === 0
-      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'review' ? 'nothing to review' : col.key === 'blocked' ? 'no blockers' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
+      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'review' ? 'nothing to review' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
       : '';
 
     node.innerHTML = `
@@ -320,13 +319,16 @@ function buildBoardHeader(iter) {
   const startBtn = isActive
     ? `<button class="btn btn-sm" id="board-start-iter" title="Dispatch every todo task in this iteration to its agent">▷ Start iteration</button>`
     : '';
+  const finalizeBtn = isActive
+    ? `<button class="btn btn-sm" id="board-finalize-iter" title="Review checklist and merge auto/iter-${escapeHtml(String(iter.id || ''))} into a target branch">✓ Finalize</button>`
+    : '';
   wrap.innerHTML = `
     <div class="board-title-row">
       <span class="board-iter-glyph" style="color:var(--iter-active)">●</span>
       ${trackPart}
       <span class="board-title" style="color:var(--fg-1)">${escapeHtml(iter.id || '')} ${escapeHtml(iter.slug || '')}</span>
       <span class="board-iter-meta">— ${escapeHtml(title)}</span>
-      <span class="board-iter-actions">${startBtn}</span>
+      <span class="board-iter-actions">${startBtn} ${finalizeBtn}</span>
     </div>
     <div class="board-progress">
       <span class="label">Tasks</span>
@@ -335,8 +337,10 @@ function buildBoardHeader(iter) {
     </div>
   `;
   if (isActive) {
-    const btn = wrap.querySelector('#board-start-iter');
-    if (btn) btn.addEventListener('click', () => startBoardIteration(track, iter.id));
+    const startEl = wrap.querySelector('#board-start-iter');
+    if (startEl) startEl.addEventListener('click', () => startBoardIteration(track, iter.id));
+    const finalizeEl = wrap.querySelector('#board-finalize-iter');
+    if (finalizeEl) finalizeEl.addEventListener('click', () => openFinalizeModal(track, iter.id));
   }
   return wrap;
 }
@@ -354,11 +358,13 @@ async function startBoardIteration(track, iterId) {
     });
     const skipped = (r.skipped || []).length;
     const queued = (r.queued || []).length;
+    const pending = (r.pending || []).length;
+    const head = `queued ${queued}${pending ? ` · pending ${pending} (auto-dispatch when deps complete)` : ''}`;
     if (skipped) {
       const reasons = r.skipped.slice(0, 3).map(s => `${s.id}: ${s.reason}`).join('; ');
-      toast(`queued ${queued} · skipped ${skipped} (${reasons}${skipped > 3 ? '…' : ''})`, queued ? 'success' : 'error');
+      toast(`${head} · skipped ${skipped} (${reasons}${skipped > 3 ? '…' : ''})`, (queued || pending) ? 'success' : 'error');
     } else {
-      toast(`queued ${queued} tasks`, 'success');
+      toast(head, 'success');
     }
     await refresh();
   } catch (e) { toast(`start failed: ${e.message}`, 'error'); }

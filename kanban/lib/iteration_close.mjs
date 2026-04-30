@@ -9,10 +9,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ROOT } from './config.mjs';
+import { ROOT, WORKFLOW } from './config.mjs';
 import { findIteration, listTasksInIteration } from './repo.mjs';
 import { extractSection } from './frontmatter.mjs';
-import { destroyWorktree, branchName } from './worktrees.mjs';
+import {
+  destroyIterWorktree, iterWorktreePath,
+  iterationBranchName as iterBranchName,
+  commitWorktreeWork,
+} from './worktrees.mjs';
 import { logger } from './logger.mjs';
 
 function git(args, opts = {}) {
@@ -20,35 +24,8 @@ function git(args, opts = {}) {
   return { code: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
 }
 
-export function iterationBranchName(iterId) {
-  return `auto/iter-${iterId}`;
-}
-
-// Ensure the iteration branch exists, branched from main's HEAD.
-function ensureIterBranch(name, baseRef) {
-  const has = git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]);
-  if (has.code === 0) return { ok: true, existed: true };
-  const created = git(['branch', name, baseRef || 'main']);
-  if (created.code !== 0) return { ok: false, error: created.stderr };
-  return { ok: true, existed: false };
-}
-
-// Merge a task branch into the iteration branch using a temporary worktree
-// (so the user's main checkout is never disturbed).
-function mergeIntoIter(iterBranch, taskBranch, tmpDir) {
-  fs.mkdirSync(path.dirname(tmpDir), { recursive: true });
-  // Spin up a throwaway worktree on the iteration branch.
-  let add = git(['worktree', 'add', tmpDir, iterBranch]);
-  if (add.code !== 0) return { ok: false, error: `worktree add: ${add.stderr}` };
-
-  const merge = git(['merge', '--no-ff', '-m', `merge ${taskBranch}`, taskBranch], { cwd: tmpDir });
-  const conflict = merge.code !== 0;
-  if (conflict) {
-    git(['merge', '--abort'], { cwd: tmpDir });
-  }
-  git(['worktree', 'remove', '--force', tmpDir]);
-  return { ok: !conflict, conflict };
-}
+// Re-export for callers that still use this module's symbol.
+export const iterationBranchName = iterBranchName;
 
 function tsBlock(s) {
   return (s || '').trim();
@@ -144,37 +121,189 @@ function buildChecklist({ trackSlug, iterId, tasks, mergeReports }) {
   return lines.join('\n');
 }
 
-// Close an iteration: merge all task branches whose status is passed-auto or
-// done into the iteration branch, write CHECKLIST.md inside the iteration's
-// directory. Returns a summary the UI / monitor can show.
-//
-// Idempotent: re-running adds a fresh CHECKLIST.md and re-attempts pending
-// merges (skips already-merged branches via git's own tracking).
+// ─── Branch discovery & root state ────────────────────────────────────────
+
+// List local branches the user can pick as a finalize target. Excludes
+// ephemeral iteration branches and detached HEAD entries.
+export function listLocalBranches() {
+  const r = git(['branch', '--list', '--format=%(refname:short)']);
+  if (r.code !== 0) return [];
+  return r.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+    .filter(b => !b.startsWith('auto/iter-'));
+}
+
+export function rootBranch() {
+  const r = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+export function rootDirty() {
+  const r = git(['status', '--porcelain']);
+  return r.code === 0 ? !!r.stdout.trim() : false;
+}
+
+// ─── Finalize: merge iter branch into a user-picked target ─────────────────
+
+// Merge `auto/iter-<id>` into targetBranch with --no-ff. Strategy:
+//   - If targetBranch is checked out in ROOT: merge directly there (requires
+//     ROOT to be clean). User sees the result immediately.
+//   - Otherwise: spin up a temp worktree on targetBranch, merge there, drop
+//     the worktree. ROOT untouched.
+// Returns { ok, merged_in?, target?, conflict?, error? }.
+export function mergeIterIntoTarget(iterId, targetBranch, opts = {}) {
+  const iterBranch = iterationBranchName(iterId);
+  const has = git(['rev-parse', '--verify', '--quiet', `refs/heads/${targetBranch}`]);
+  if (has.code !== 0) return { ok: false, error: `branch '${targetBranch}' does not exist locally` };
+  const iterHas = git(['rev-parse', '--verify', '--quiet', `refs/heads/${iterBranch}`]);
+  if (iterHas.code !== 0) return { ok: false, error: `iteration branch '${iterBranch}' missing — was the iteration started?` };
+
+  const message = opts.message || `iter ${iterId}: finalize`;
+  const rb = rootBranch();
+  if (rb === targetBranch) {
+    if (rootDirty()) return { ok: false, error: 'ROOT has uncommitted changes — commit or stash before finalizing' };
+    const merge = git(['merge', '--no-ff', '-m', message, iterBranch], { cwd: ROOT });
+    if (merge.code !== 0) {
+      git(['merge', '--abort'], { cwd: ROOT });
+      return { ok: false, conflict: true, error: `merge conflict: ${merge.stderr || merge.stdout}` };
+    }
+    return { ok: true, merged_in: 'root', target: targetBranch };
+  }
+
+  const tmp = path.join(WORKFLOW, 'tmp', `finalize-${iterId}-${Date.now()}`);
+  fs.mkdirSync(path.dirname(tmp), { recursive: true });
+  const add = git(['worktree', 'add', tmp, targetBranch]);
+  if (add.code !== 0) {
+    return { ok: false, error: `cannot create temp worktree on '${targetBranch}': ${add.stderr || add.stdout}` };
+  }
+  const merge = git(['merge', '--no-ff', '-m', message, iterBranch], { cwd: tmp });
+  let conflict = false;
+  if (merge.code !== 0) {
+    git(['merge', '--abort'], { cwd: tmp });
+    conflict = true;
+  }
+  git(['worktree', 'remove', '--force', tmp]);
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  if (conflict) return { ok: false, conflict: true, error: `merge conflict: ${merge.stderr || merge.stdout}` };
+  return { ok: true, merged_in: 'temp_worktree', target: targetBranch };
+}
+
+// Snapshot of state needed by the finalize modal: tasks, branches, root info.
+export function getFinalizeInfo(trackSlug, iterId) {
+  const iter = findIteration(trackSlug, iterId);
+  if (!iter) return { ok: false, error: 'iteration not found' };
+  const tasks = listTasksInIteration(trackSlug, iterId);
+  const closedStatuses = new Set(['done', 'passed-auto']);
+  const incomplete = tasks.filter(t => !closedStatuses.has(t.status));
+  const rb = rootBranch();
+  return {
+    ok: true,
+    iteration: {
+      id: iterId,
+      track: trackSlug,
+      title: iter.fm?.title || '',
+      branch: iterationBranchName(iterId),
+      status: iter.fm?.status || null,
+    },
+    tasks: tasks.map(t => ({
+      id: t.id, title: t.title || '', status: t.status,
+      assignee: t.assignee || 'user',
+      verify: t._verify || '',
+      auto_verify_status: t.auto_verify_status || null,
+      attempts: Number(t.attempts || 0),
+      verify_attempts: Number(t.verify_attempts || 0),
+    })),
+    incomplete: incomplete.map(t => ({ id: t.id, title: t.title || '', status: t.status })),
+    branches: listLocalBranches(),
+    root_branch: rb,
+    root_dirty: rootDirty(),
+    suggested_target: rb || 'main',
+  };
+}
+
+// Run the full finalize ritual: salvage commit → merge → CHECKLIST → teardown.
+// Returns { ok, iter_branch, target, merged_in, incomplete_count, error?, conflict? }.
+export function finalizeIteration(trackSlug, iterId, opts = {}) {
+  const iter = findIteration(trackSlug, iterId);
+  if (!iter) return { ok: false, error: 'iteration not found' };
+  const tasks = listTasksInIteration(trackSlug, iterId);
+  const closedStatuses = new Set(['done', 'passed-auto']);
+  const incomplete = tasks.filter(t => !closedStatuses.has(t.status));
+
+  if (incomplete.length && !opts.ack_incomplete) {
+    return {
+      ok: false, error: 'incomplete tasks — pass ack_incomplete: true to confirm',
+      incomplete: incomplete.map(t => ({ id: t.id, status: t.status })),
+    };
+  }
+  const target = String(opts.target_branch || '').trim();
+  if (!target) return { ok: false, error: 'target_branch required' };
+
+  // 1. Salvage any leftover dirty state in the iter worktree.
+  const iterWt = iterWorktreePath(iterId);
+  if (fs.existsSync(iterWt)) {
+    const salv = commitWorktreeWork(`iter-${iterId}`, {
+      worktree: iterWt,
+      message: `iter ${iterId}: finalize salvage`,
+    });
+    if (!salv.ok) return { ok: false, error: `salvage commit: ${salv.error}` };
+  }
+
+  // 2. Compose merge commit message and merge into target.
+  const summary = String(opts.summary || '').trim();
+  const title = iter.fm?.title || '';
+  const subject = `iter ${iterId}${title ? `: ${title}` : ': finalize'}`;
+  const incompleteNote = incomplete.length
+    ? `\n\nIncomplete at finalize: ${incomplete.map(t => `${t.id}(${t.status})`).join(', ')}`
+    : '';
+  const message = `${subject}${summary ? `\n\n${summary}` : ''}${incompleteNote}`;
+
+  const m = mergeIterIntoTarget(iterId, target, { message });
+  if (!m.ok) return m;
+
+  // 3. Generate CHECKLIST.md (record of what was finalized).
+  const checklist = buildChecklist({ trackSlug, iterId, tasks, mergeReports: [] });
+  fs.writeFileSync(path.join(iter.dir, 'CHECKLIST.md'), checklist, 'utf-8');
+
+  // 4. Tear down the iter worktree. The iter branch stays — user can revert
+  //    via `git revert -m 1 <merge-commit>` if needed and the original work
+  //    is still inspectable.
+  try { destroyIterWorktree(iterId); } catch (e) { logger.warn('iteration_close', `iter worktree teardown ${iterId}: ${e.message}`); }
+
+  return {
+    ok: true,
+    iter_branch: iterationBranchName(iterId),
+    target,
+    merged_in: m.merged_in,
+    incomplete_count: incomplete.length,
+  };
+}
+
+// Close an iteration. All agents share the iteration's worktree, so closing
+// is just: commit any straggler dirty state, generate CHECKLIST.md, tear down
+// the worktree. The iter branch (`auto/iter-<id>`) stays in the repo for the
+// user to merge into main on their schedule. Idempotent.
 export function closeIteration(trackSlug, iterId, opts = {}) {
   const iter = findIteration(trackSlug, iterId);
   if (!iter) return { ok: false, error: 'iteration not found' };
 
   const tasks = listTasksInIteration(trackSlug, iterId);
-  const eligibleStatuses = new Set(['passed-auto', 'done']);
-  const eligible = tasks.filter(t => eligibleStatuses.has(t.status));
-
   const iterBranch = iterationBranchName(iterId);
-  const baseRef = opts.baseRef || 'main';
-  const ensured = ensureIterBranch(iterBranch, baseRef);
-  if (!ensured.ok) return { ok: false, error: `iter branch: ${ensured.error}` };
 
-  const tmpRoot = path.join(ROOT, '.workflow', 'tmp', `merge-${iterId}-${Date.now()}`);
+  // Salvage uncommitted work in the iter-worktree as a generic commit so the
+  // iter branch reflects whatever shipped, even if an agent forgot to call
+  // workflow_commit_task.
   const reports = [];
-  for (const t of eligible) {
-    const tBranch = t.worktree_branch || branchName(t.id, iterId);
-    const tmpDir = path.join(tmpRoot, t.id);
-    const r = mergeIntoIter(iterBranch, tBranch, tmpDir);
-    reports.push({ taskId: t.id, branch: tBranch, iterBranch, conflict: !!r.conflict, error: r.error || null });
-    if (r.ok && opts.cleanupWorktrees !== false) {
-      try { destroyWorktree(t.id); } catch (e) { logger.warn('iteration_close', `worktree teardown ${t.id}: ${e.message}`); }
-    }
+  const iterWt = iterWorktreePath(iterId);
+  const r = commitWorktreeWork(`iter-${iterId}`, {
+    worktree: iterWt,
+    message: `iter ${iterId}: close-iteration salvage`,
+  });
+  if (r.ok && r.committed) reports.push({ kind: 'salvage', branch: iterBranch, ok: true });
+  else if (!r.ok) reports.push({ kind: 'salvage', branch: iterBranch, ok: false, error: r.error });
+
+  if (opts.cleanupWorktrees !== false) {
+    try { destroyIterWorktree(iterId); } catch (e) { logger.warn('iteration_close', `iter worktree teardown ${iterId}: ${e.message}`); }
   }
-  try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
 
   const checklist = buildChecklist({ trackSlug, iterId, tasks, mergeReports: reports });
   const checklistPath = path.join(iter.dir, 'CHECKLIST.md');

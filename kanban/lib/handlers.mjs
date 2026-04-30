@@ -7,9 +7,15 @@ import {
   AUTO_VERIFY_REWORK_LIMIT,
   trackDir, trackActiveFile, trackItersDir, iterDirFor,
 } from './config.mjs';
-import { provisionWorktree, destroyWorktree, branchName, worktreePath } from './worktrees.mjs';
+import {
+  provisionIterWorktree, iterWorktreePath, iterationBranchName,
+  commitWorktreeWork,
+} from './worktrees.mjs';
 import { enqueueVerify, listJobs as listVerifyJobs } from './verify_queue.mjs';
-import { closeIteration as runCloseIteration } from './iteration_close.mjs';
+import {
+  closeIteration as runCloseIteration,
+  getFinalizeInfo, finalizeIteration,
+} from './iteration_close.mjs';
 import {
   exists, readText, rel,
   listTrackSlugs, readTrack, writeTrackReadme, trackActive, setTrackActive,
@@ -68,6 +74,25 @@ function attachStats(tasks) {
   return tasks;
 }
 
+// Build { depId: status } for any deps referenced by `tasks` whose target
+// task is NOT in the returned set. Resolved against ALL tasks in the repo
+// so cross-track / cross-iteration deps don't show as unmet on the board.
+function buildDepIndex(tasks) {
+  const present = new Set(tasks.map(t => t.id));
+  const needed = new Set();
+  for (const t of tasks) {
+    for (const d of (t.deps || [])) {
+      if (!present.has(d)) needed.add(d);
+    }
+  }
+  if (!needed.size) return {};
+  const idx = {};
+  for (const t of listAllTasks()) {
+    if (needed.has(t.id)) idx[t.id] = t.status || 'todo';
+  }
+  return idx;
+}
+
 export function handleBoard(res, query = {}) {
   const want = query.track || null;
   if (want) {
@@ -76,26 +101,30 @@ export function handleBoard(res, query = {}) {
     const aid = trackActive(want);
     if (!aid) return sendJson(res, 200, envelope({
       iteration: null, track: { slug: want, fm: t.fm, body: t.body },
-      tasks: [],
+      tasks: [], dep_index: {},
     }));
     const iter = findIteration(want, aid);
+    const tasks = iter ? attachStats(listTasksInIteration(want, aid)) : [];
     return sendJson(res, 200, envelope({
       iteration: iter ? {
         id: iter.id, slug: iter.slug, dir: rel(iter.dir),
         readme: iter.body, fm: iter.fm, track: want, status: iter.status,
       } : null,
       track: { slug: want, fm: t.fm, body: t.body },
-      tasks: iter ? attachStats(listTasksInIteration(want, aid)) : [],
+      tasks,
+      dep_index: buildDepIndex(tasks),
     }));
   }
   // aggregate across active iterations
   const actives = activeIterations();
   const tasks = [];
   for (const iter of actives) tasks.push(...listTasksInIteration(iter.track, iter.id));
+  const attached = attachStats(tasks);
   return sendJson(res, 200, envelope({
     iteration: null,
     actives: actives.map(it => ({ track: it.track, id: it.id, slug: it.slug, status: it.status })),
-    tasks: attachStats(tasks),
+    tasks: attached,
+    dep_index: buildDepIndex(attached),
   }));
 }
 
@@ -501,6 +530,9 @@ export async function handlePatch(req, res, tid) {
   if ('body' in patch && typeof patch.body === 'string') nextBody = patch.body;
   saveTask(p, fm, nextBody);
   fm._path = rel(p);
+  if (fm.status === 'done') {
+    try { releasePendingDispatch(); } catch {}
+  }
   sendJson(res, 200, fm);
 }
 
@@ -601,15 +633,17 @@ export function handleCancelDispatch(res, tid) {
   if (!p) return sendJson(res, 404, { error: 'task not found' });
   const removed = deleteTrigger(tid);
   let reverted = false;
+  let cleared = false;
+  if ('auto_dispatch' in fm) { delete fm.auto_dispatch; cleared = true; }
   if (fm.status === 'queued' || fm.status === 'in-progress') {
     fm.status = 'todo';
-    saveTask(p, fm, body);
     reverted = true;
   }
-  if (!removed && !reverted) {
-    return sendJson(res, 409, { error: 'nothing to stop: not queued and not in-progress' });
+  if (reverted || cleared) saveTask(p, fm, body);
+  if (!removed && !reverted && !cleared) {
+    return sendJson(res, 409, { error: 'nothing to stop: not queued, in-progress, or pending' });
   }
-  sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, queue_size: queueCount() });
+  sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, pending_cleared: cleared, queue_size: queueCount() });
 }
 
 // Internal: try to dispatch one task. Returns { ok, error?, code? } so batch
@@ -626,9 +660,29 @@ function _dispatchInternal(tid) {
   const cycle = findDepCycle(tid);
   if (cycle.length) return { ok: false, code: 409, error: `circular dep: ${cycle.join(' → ')}` };
   fm.status = 'queued';
+  if ('auto_dispatch' in fm) delete fm.auto_dispatch;
   saveTask(p, fm, body);
   writeTrigger(tid, fm, p, { reason: 'dispatch' });
   return { ok: true };
+}
+
+// Scan tasks flagged for auto-dispatch (queued by handleIterStart but blocked
+// on deps at start time). Dispatch any whose deps are now satisfied. Called
+// after a task transitions to 'done' so a freshly-completed dep cascades.
+function releasePendingDispatch() {
+  const released = [];
+  for (const t of listAllTasks()) {
+    if (t.status !== 'todo') continue;
+    if (!(t.auto_dispatch === true || t.auto_dispatch === 'true')) continue;
+    const [okDeps] = depsSatisfied(t.deps || []);
+    if (!okDeps) continue;
+    const r = _dispatchInternal(t.id);
+    if (r.ok) released.push(t.id);
+  }
+  if (released.length) {
+    broadcastChange('change', { kind: 'auto_dispatch', task_ids: released });
+  }
+  return released;
 }
 
 export function handleDispatch(res, tid) {
@@ -645,17 +699,39 @@ export function handleDispatch(res, tid) {
 export async function handleIterStart(req, res, trackSlug, iterId) {
   const it = findIteration(trackSlug, iterId);
   if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  // Provision the iteration's integration worktree once. This is the checkout
+  // where Unity verifies the integrated work; per-task branches merge into
+  // it as agents finish. Idempotent.
+  const iterWt = provisionIterWorktree(iterId);
+  if (!iterWt.ok) {
+    return sendJson(res, 500, { error: `iter worktree: ${iterWt.error}` });
+  }
   const tasks = listTasksInIteration(trackSlug, iterId);
+  const agents = listAgents();
   const queued = [];
+  const pending = [];
   const skipped = [];
   for (const t of tasks) {
     if (t.status !== 'todo') { skipped.push({ id: t.id, reason: `status=${t.status}` }); continue; }
     if (!t.assignee || t.assignee === 'user') { skipped.push({ id: t.id, reason: 'assignee=user' }); continue; }
+    if (!agents.includes(t.assignee)) { skipped.push({ id: t.id, reason: `agent '${t.assignee}' not registered` }); continue; }
+    const cycle = findDepCycle(t.id);
+    if (cycle.length) { skipped.push({ id: t.id, reason: `circular dep: ${cycle.join(' → ')}` }); continue; }
+    const [okDeps, open] = depsSatisfied(t.deps || []);
+    if (!okDeps) {
+      // Hold for auto-dispatch — released when its deps complete.
+      const [p, fm, body] = findTask(t.id);
+      if (!p) { skipped.push({ id: t.id, reason: 'task vanished' }); continue; }
+      fm.auto_dispatch = true;
+      saveTask(p, fm, body);
+      pending.push({ id: t.id, waiting_on: open });
+      continue;
+    }
     const r = _dispatchInternal(t.id);
     if (r.ok) queued.push(t.id);
     else skipped.push({ id: t.id, reason: r.error });
   }
-  sendJson(res, 200, { queued, skipped, queue_size: queueCount() });
+  sendJson(res, 200, { queued, pending, skipped, queue_size: queueCount(), iter_worktree: rel(iterWt.path) });
 }
 
 export function handleQueueStatus(res) {
@@ -696,8 +772,9 @@ function buildApproveBlock(attempt, summary) {
 export async function handleVerify(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'verifying' && fm.status !== 'in-progress' && fm.status !== 'queued') {
-    return sendJson(res, 409, { error: `can verify only verifying/in-progress/queued tasks, current: ${fm.status}` });
+  const verifiable = new Set(['verifying', 'in-progress', 'queued', 'passed-auto', 'red-auto']);
+  if (!verifiable.has(fm.status)) {
+    return sendJson(res, 409, { error: `can verify only ${[...verifiable].join('/')} tasks, current: ${fm.status}` });
   }
   let payload;
   try { payload = await readBody(req); }
@@ -764,6 +841,7 @@ export async function handleVerify(req, res, tid) {
       curFm.status = 'done';
       saveTask(cur[0], curFm, curBody);
       broadcastChange('change', { kind: 'verify', task_id: tid, result: 'done', commit: git.commit });
+      try { releasePendingDispatch(); } catch {}
     } catch (e) {
       try {
         const cur = findTask(tid);
@@ -866,13 +944,18 @@ export function _claimTaskInternal(tid) {
   // collide on the same files. The worktree path is persisted on the task
   // so the spawner can launch the agent with the right cwd.
   const isAuto = fm.auto_verify === 'true' || fm.auto_verify === true;
-  if (isAuto && !fm.worktree_path) {
-    const wt = provisionWorktree(tid, { iteration: fm.iteration || null });
-    if (wt.ok) {
-      fm.worktree_path = rel(wt.path);
-      fm.worktree_branch = wt.branch || branchName(tid, fm.iteration || null);
+  // Auto-mode tasks share the iteration's worktree (where Unity is open and
+  // agents read/write the integrated state). Per-task isolation was removed
+  // because Unity-MCP can't see uncommitted work across separate worktrees;
+  // file-level conflicts between agents are serialized by the queue's
+  // expected_files lock instead.
+  if (fm.iteration && !fm.worktree_path) {
+    const iterWt = provisionIterWorktree(fm.iteration);
+    if (iterWt.ok) {
+      fm.worktree_path = rel(iterWt.path);
+      fm.worktree_branch = iterationBranchName(fm.iteration);
     } else {
-      logger.warn('kanban', `worktree provision failed for ${tid}: ${wt.error}`);
+      logger.warn('kanban', `iter worktree for ${fm.iteration} failed: ${iterWt.error}`);
     }
   }
   saveTask(p, fm, body);
@@ -889,6 +972,23 @@ export async function handleClaim(req, res, tid) {
   return sendJson(res, 200, { ok: true, task_id: tid, status: r.fm.status, attempts: r.fm.attempts || 0 });
 }
 
+// Capture any uncommitted work in the iteration worktree as a final commit
+// on the iter branch. Agents are expected to call `workflow_commit_task` at
+// the end of their work; this is the safety net if they forgot. Conflicts
+// are impossible (we only commit, no merge) so the only failure mode is git
+// itself.
+function integrateTaskWorktree(fm) {
+  if (!fm.worktree_path) return { ok: true, merged: false, skipped: true };
+  const author = fm.assignee && fm.assignee !== 'user'
+    ? `${fm.assignee} <${fm.assignee}@workflow.local>`
+    : null;
+  return commitWorktreeWork(fm.id, {
+    worktree: fm.worktree_path,
+    message: `${fm.id}: ${fm.title || fm.id}`,
+    author,
+  });
+}
+
 export async function handleSubmitVerify(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
@@ -902,6 +1002,15 @@ export async function handleSubmitVerify(req, res, tid) {
   if (summary) {
     const block = `### Submit — attempt ${Number(fm.attempts || 0)} — ${fmtDate()}\n\n${summary}`;
     newBody = appendToSection(body, 'Notes', block);
+  }
+  // Safety net: commit any uncommitted work in the iter-worktree (the agent
+  // is supposed to have called workflow_commit_task already).
+  const captured = integrateTaskWorktree(fm);
+  if (!captured.ok) {
+    const note = `### Worktree commit failed — ${fmtDate()}\n\n${captured.error}`;
+    newBody = appendToSection(newBody, 'Notes', note);
+    saveTask(p, fm, newBody);
+    return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
   }
   fm.status = 'verifying';
   saveTask(p, fm, newBody);
@@ -1203,10 +1312,18 @@ export async function handleAutoVerifyResult(req, res, tid) {
   const limit = Number(fm.auto_verify_limit || AUTO_VERIFY_REWORK_LIMIT);
   const ts = fmtDate();
 
-  // Defer to Unity: hand off to verify queue.
+  // Defer to Unity: hand off to verify queue. Make sure any uncommitted work
+  // hits the iter branch first so the Unity job sees it.
   if (needsUnity && fm.status === 'auto-verifying') {
+    const captured = integrateTaskWorktree(fm);
+    if (!captured.ok) {
+      const note = `### Worktree commit failed (pre-Unity) — attempt ${attempt} — ${ts}\n\n${captured.error}`;
+      saveTask(p, fm, appendToSection(body, 'Notes', note));
+      return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
+    }
     const jobId = enqueueVerify({
       taskId: tid,
+      iteration: fm.iteration || null,
       kind: 'unity',
       resourceTags: ['unity_editor'],
       payload: payload.unity_payload || {},
@@ -1220,9 +1337,16 @@ export async function handleAutoVerifyResult(req, res, tid) {
   }
 
   if (passed) {
+    const captured = integrateTaskWorktree(fm);
+    if (!captured.ok) {
+      const note = `### Worktree commit failed — attempt ${attempt} — ${ts}\n\n${captured.error}`;
+      saveTask(p, fm, appendToSection(body, 'Notes', note));
+      return sendJson(res, 500, { error: `worktree commit: ${captured.error}` });
+    }
     fm.status = 'passed-auto';
     fm.auto_verify_status = 'green';
-    const block = `### Auto-verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}`;
+    const tail = captured.committed ? `\n\nSafety-committed straggler edits to \`${iterationBranchName(fm.iteration)}\`.` : '';
+    const block = `### Auto-verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}${tail}`;
     saveTask(p, fm, appendToSection(body, 'Notes', block));
     try { releaseExpectedFiles(tid); } catch {}
     return sendJson(res, 200, { ok: true, status: fm.status });
@@ -1242,6 +1366,28 @@ export async function handleAutoVerifyResult(req, res, tid) {
   const block = `### Auto-verify failed — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}\n\nAgent should rework and re-run auto-verify.`;
   saveTask(p, fm, appendToSection(body, 'Notes', block));
   return sendJson(res, 200, { ok: true, status: fm.status, rework: true, attempts_left: limit - attempt });
+}
+
+// POST /api/task/:id/commit-worktree  body: { summary?: string }
+// Agent commits its work in the per-task worktree on the per-task branch.
+// Centralizes commit message format and author so the iteration log stays
+// uniform. No-op when there's nothing to commit.
+export async function handleCommitWorktree(req, res, tid) {
+  const [p, fm] = findTask(tid);
+  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  if (!fm.worktree_path) {
+    return sendJson(res, 409, { error: 'task has no worktree (no iteration set, or iteration not started)' });
+  }
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const summary = String(payload.summary || '').trim();
+  const title = fm.title || tid;
+  const msg = summary ? `${tid}: ${title}\n\n${summary}` : `${tid}: ${title}`;
+  const author = fm.assignee && fm.assignee !== 'user'
+    ? `${fm.assignee} <${fm.assignee}@workflow.local>`
+    : null;
+  const r = commitWorktreeWork(tid, { worktree: fm.worktree_path, message: msg, author });
+  if (!r.ok) return sendJson(res, 500, { error: r.error });
+  return sendJson(res, 200, { ok: true, committed: !!r.committed });
 }
 
 // POST /api/task/:id/how-to-verify  body: { content: "markdown" }
@@ -1270,6 +1416,52 @@ export async function handleIterCloseAuto(req, res, trackSlug, iterId) {
   let payload = {}; try { payload = await readBody(req); } catch {}
   const r = runCloseIteration(trackSlug, iterId, payload || {});
   if (!r.ok) return sendJson(res, 409, { error: r.error });
+  return sendJson(res, 200, r);
+}
+
+// GET /api/track/:slug/iteration/:id/finalize-info
+// Returns the snapshot the finalize modal renders: iteration + tasks +
+// branch list + ROOT state. Read-only.
+export function handleIterFinalizeInfo(res, trackSlug, iterId) {
+  const r = getFinalizeInfo(trackSlug, iterId);
+  if (!r.ok) return sendJson(res, 404, { error: r.error });
+  return sendJson(res, 200, r);
+}
+
+// POST /api/track/:slug/iteration/:id/finalize
+// Body: { target_branch, summary?, ack_incomplete? }
+// Salvage-commit, merge auto/iter-<id> into target_branch with --no-ff,
+// generate CHECKLIST.md, tear down iter worktree, mark iteration done.
+export async function handleIterFinalize(req, res, trackSlug, iterId) {
+  let payload = {}; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const r = finalizeIteration(trackSlug, iterId, payload);
+  if (!r.ok) return sendJson(res, 409, r);
+
+  // Mark iteration done in its README frontmatter.
+  const iter = findIteration(trackSlug, iterId);
+  if (iter) {
+    const readmePath = path.join(iter.dir, 'README.md');
+    if (exists(readmePath)) {
+      try {
+        const [fm, body] = parseTask(readText(readmePath));
+        if (fm) {
+          fm.status = 'done';
+          fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
+        }
+      } catch (e) { logger.warn('kanban', `iter README mark-done failed: ${e.message}`); }
+    }
+  }
+  // Drop ACTIVE pointer so the track's next iteration can start cleanly.
+  try {
+    const activeFile = trackActiveFile(trackSlug);
+    if (exists(activeFile)) {
+      const cur = readText(activeFile).trim();
+      if (cur === iterId) fs.rmSync(activeFile, { force: true });
+    }
+  } catch (e) { logger.warn('kanban', `clear ACTIVE failed: ${e.message}`); }
+
+  broadcastChange('change', { kind: 'iter_finalize', iter_id: iterId, target: r.target });
   return sendJson(res, 200, r);
 }
 
