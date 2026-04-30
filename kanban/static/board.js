@@ -28,7 +28,7 @@ function renderCard(t, opts = {}) {
   const isQueued = queuedIds.has(t.id) || t.status === 'queued';
   const showStart = t.status === 'todo' && !isQueued;
   const showStop = !isUser && (isQueued || t.status === 'in-progress');
-  const showVerify = t.status === 'verifying' || t.status === 'passed-auto' || t.status === 'red-auto';
+  const showVerify = t.status === 'verifying';
 
   // header
   const trackBadge = opts.showTrackBadge && t.track

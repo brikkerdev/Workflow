@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
-import { findIteration, listTasksInIteration, saveTask, findTask } from './repo.mjs';
+import { findIteration, listTasksInIteration } from './repo.mjs';
 import { extractSection } from './frontmatter.mjs';
 import { logger } from './logger.mjs';
 
@@ -21,8 +21,8 @@ function git(args, opts = {}) {
 function tsBlock(s) { return (s || '').trim(); }
 
 // Build the aggregated CHECKLIST.md content from finished tasks. Groups by
-// (track, iteration). Auto-verified passes and approved manual tasks
-// collapse together. red-auto surfaces as needs-attention.
+// (track, iteration). Tasks at `verifying` (manual review pending) surface
+// as needs-attention so the user can finish them before closing.
 function buildChecklist({ trackSlug, iterId, tasks }) {
   const lines = [];
   lines.push(`# Iteration ${iterId} — verification checklist`);
@@ -38,12 +38,12 @@ function buildChecklist({ trackSlug, iterId, tasks }) {
     groups.get(key).push(t);
   }
 
-  const redTasks = tasks.filter(t => t.status === 'red-auto');
-  if (redTasks.length) {
+  const pending = tasks.filter(t => t.status === 'verifying');
+  if (pending.length) {
     lines.push('## ⚠ Needs you');
     lines.push('');
-    for (const t of redTasks) {
-      lines.push(`- [ ] **${t.id}** ${t.title || ''} — auto-verify exhausted`);
+    for (const t of pending) {
+      lines.push(`- [ ] **${t.id}** ${t.title || ''} — awaiting your manual verify`);
       const verify = tsBlock(t._verify);
       if (verify) lines.push(verify.split('\n').map(l => `  ${l}`).join('\n'));
     }
@@ -52,7 +52,7 @@ function buildChecklist({ trackSlug, iterId, tasks }) {
 
   const seenSteps = new Set();
   for (const [feature, group] of groups) {
-    const closed = group.filter(t => t.status === 'done' || t.status === 'passed-auto');
+    const closed = group.filter(t => t.status === 'done');
     if (!closed.length) continue;
     lines.push(`## ${feature}`);
     lines.push('');
@@ -68,7 +68,7 @@ function buildChecklist({ trackSlug, iterId, tasks }) {
           lines.push(`- [ ] ${line}`);
         }
       } else {
-        lines.push(`- [ ] (no manual steps — auto-verify only)`);
+        lines.push(`- [ ] (no manual steps recorded)`);
       }
       lines.push('');
     }
@@ -78,9 +78,7 @@ function buildChecklist({ trackSlug, iterId, tasks }) {
   lines.push('');
   for (const t of tasks) {
     const tag = t.status === 'done' ? '✓'
-              : t.status === 'passed-auto' ? '✓'
-              : t.status === 'red-auto' ? '✗'
-              : t.status === 'awaiting-unity' ? '…'
+              : t.status === 'verifying' ? '…'
               : t.status;
     lines.push(`- ${tag} **${t.id}** ${t.title || ''} (${t.status})`);
   }
@@ -94,8 +92,7 @@ export function getFinalizeInfo(trackSlug, iterId) {
   const iter = findIteration(trackSlug, iterId);
   if (!iter) return { ok: false, error: 'iteration not found' };
   const tasks = listTasksInIteration(trackSlug, iterId);
-  const closedStatuses = new Set(['done', 'passed-auto']);
-  const incomplete = tasks.filter(t => !closedStatuses.has(t.status));
+  const incomplete = tasks.filter(t => t.status !== 'done');
   const rb = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   return {
     ok: true,
@@ -109,25 +106,22 @@ export function getFinalizeInfo(trackSlug, iterId) {
       id: t.id, title: t.title || '', status: t.status,
       assignee: t.assignee || 'user',
       verify: t._verify || '',
-      auto_verify_status: t.auto_verify_status || null,
       attempts: Number(t.attempts || 0),
-      verify_attempts: Number(t.verify_attempts || 0),
     })),
     incomplete: incomplete.map(t => ({ id: t.id, title: t.title || '', status: t.status })),
     root_branch: rb.code === 0 ? rb.stdout : null,
   };
 }
 
-// Finalize: bulk-mark every passed-auto / done task as done, generate the
-// CHECKLIST.md record, leave git alone. The user already approved each task
-// (manual verify) or the server auto-committed it (auto-verify). Returns
-// { ok, closed, incomplete_count, error?, incomplete? }.
+// Finalize: write CHECKLIST.md for the record. Per-task commits already
+// landed in ROOT (server commits on auto-verify submit / manual approve),
+// so no git work runs here. Returns { ok, incomplete_count, error?,
+// incomplete? }.
 export function finalizeIteration(trackSlug, iterId, opts = {}) {
   const iter = findIteration(trackSlug, iterId);
   if (!iter) return { ok: false, error: 'iteration not found' };
   const tasks = listTasksInIteration(trackSlug, iterId);
-  const closedStatuses = new Set(['done', 'passed-auto']);
-  const incomplete = tasks.filter(t => !closedStatuses.has(t.status));
+  const incomplete = tasks.filter(t => t.status !== 'done');
 
   if (incomplete.length && !opts.ack_incomplete) {
     return {
@@ -136,33 +130,17 @@ export function finalizeIteration(trackSlug, iterId, opts = {}) {
     };
   }
 
-  // Bulk-promote any passed-auto leftovers to done. (Manual `done` tasks
-  // are unchanged.)
-  const closed = [];
-  for (const t of tasks) {
-    if (t.status !== 'passed-auto') continue;
-    const [p, fm, body] = findTask(t.id);
-    if (!p) continue;
-    fm.status = 'done';
-    saveTask(p, fm, body);
-    closed.push(t.id);
-  }
-
-  // Refresh tasks so the checklist reflects the bulk-promote.
-  const finalTasks = listTasksInIteration(trackSlug, iterId);
-  const checklist = buildChecklist({ trackSlug, iterId, tasks: finalTasks });
+  const checklist = buildChecklist({ trackSlug, iterId, tasks });
   fs.writeFileSync(path.join(iter.dir, 'CHECKLIST.md'), checklist, 'utf-8');
 
   return {
     ok: true,
-    closed,
     incomplete_count: incomplete.length,
   };
 }
 
-// Legacy entry point retained for the old close-auto button (still wired
-// through server.mjs). Now equivalent to a no-op finalize that only writes
-// CHECKLIST.md. Idempotent.
+// Legacy: same as finalize without the ack gate, plus a path return for the
+// old close-auto button. Wired through server.mjs for back-compat.
 export function closeIteration(trackSlug, iterId, opts = {}) {
   const iter = findIteration(trackSlug, iterId);
   if (!iter) return { ok: false, error: 'iteration not found' };
@@ -173,6 +151,6 @@ export function closeIteration(trackSlug, iterId, opts = {}) {
   return {
     ok: true,
     checklist_path: path.relative(ROOT, checklistPath).replace(/\\/g, '/'),
-    needs_attention: tasks.filter(t => t.status === 'red-auto').map(t => t.id),
+    needs_attention: tasks.filter(t => t.status === 'verifying').map(t => t.id),
   };
 }

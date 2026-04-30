@@ -507,10 +507,6 @@ select.select-native:hover { border-color: var(--line-1); }
 .dot.s-in-progress, .dot[data-s="in-progress"] { background: var(--dot-in-progress); }
 .dot.s-queued,      .dot[data-s="queued"]      { background: var(--dot-queued); }
 .dot.s-verifying,   .dot[data-s="verifying"]   { background: var(--dot-verifying); }
-.dot.s-auto-verifying, .dot[data-s="auto-verifying"] { background: var(--dot-verifying); }
-.dot.s-awaiting-unity, .dot[data-s="awaiting-unity"] { background: var(--dot-verifying); }
-.dot.s-passed-auto, .dot[data-s="passed-auto"] { background: var(--dot-done); }
-.dot.s-red-auto,    .dot[data-s="red-auto"]    { background: var(--dot-blocked); }
 .dot.s-review,      .dot[data-s="review"]      { background: var(--dot-review); }
 .dot.s-done,        .dot[data-s="done"]        { background: var(--dot-done); }
 .dot.pulse { animation: dotpulse 1.4s ease-in-out infinite; }

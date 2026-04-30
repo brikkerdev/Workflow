@@ -78,7 +78,7 @@ function compactBrief(b) {
 const idArg = { task_id: { type: 'string' } };
 
 const PROTOCOL = [
-  'LANGUAGE: All free-text you produce — Notes, How to verify, auto-verify logs, commit summaries — must be in Russian. Not Ukrainian, not English. Code identifiers, file paths, and shell commands stay as they are.',
+  'LANGUAGE: All free-text you produce — Notes, How to verify, submit summaries — must be in Russian. Not Ukrainian, not English. Code identifiers, file paths, and shell commands stay as they are.',
   '',
   '1. workflow_claim_task(id) — sets in-progress, returns brief + rework notes if any.',
   '2. Plan your work via the built-in TodoWrite tool and tick items off as you',
@@ -95,10 +95,12 @@ const PROTOCOL = [
   '   criterion (paths, commands, exact expected output). It is shown at the',
   '   top of the kanban Verify panel; if it is empty or vague the user cannot',
   '   test your work. Use Edit to fill it in.',
-  '5. workflow_submit_for_verify(id, summary) — when done. Server commits and',
-  '   pushes on user approve. Auto-verify tasks (auto_verify=true) skip this and',
-  '   call workflow_auto_verify_start / workflow_auto_verify_result instead;',
-  '   the server commits automatically when auto-verify passes.',
+  '5. workflow_submit_for_verify(id, summary) — when done. Always the same call,',
+  '   regardless of auto_verify. Server commits and pushes either way:',
+  '   - auto_verify tasks: server auto-approves on submit and lands the task at done.',
+  '   - manual tasks: task sits at verifying until the user approves through the kanban.',
+  '   For auto_verify tasks you are responsible for running your own self-checks',
+  '   (lint/typecheck/build/unit tests) before submitting.',
   'Do NOT run git yourself — server owns commits and pushes.',
 ].join('\n');
 
@@ -214,32 +216,6 @@ const tools = [
       const lines = readLogSince(mark, { grep, limit });
       const cls = classifyLines(lines);
       return { lines, errors: cls.errors, warnings: cls.warnings };
-    },
-  },
-  {
-    name: 'workflow_auto_verify_start',
-    description: 'Mark task as auto-verifying (you finished editing and are about to run your self-checks). Increments attempt counter.',
-    inputSchema: { type: 'object', properties: idArg, required: ['task_id'] },
-    handler: async ({ task_id }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/auto-verify-start`, {}),
-  },
-  {
-    name: 'workflow_auto_verify_result',
-    description: 'Submit auto-verify outcome. passed=true → passed-auto. needs_unity=true with unity_payload (argv etc.) enqueues a Unity verify job under unity_editor lock. passed=false → rework or red-auto if attempts exhausted.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string' },
-        passed: { type: 'boolean' },
-        log: { type: 'string' },
-        needs_unity: { type: 'boolean' },
-        unity_payload: { type: 'object', description: '{ argv: [...], cwd?, timeout_ms?, log_grep? }' },
-      },
-      required: ['task_id'],
-    },
-    handler: async ({ task_id, passed = false, log = '', needs_unity = false, unity_payload }) => {
-      return api('POST', `/api/task/${encodeURIComponent(task_id)}/auto-verify-result`, {
-        passed, log, needs_unity, unity_payload, instance_id: INSTANCE_ID || undefined,
-      });
     },
   },
   {

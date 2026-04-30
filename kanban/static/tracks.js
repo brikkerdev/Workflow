@@ -408,10 +408,9 @@ async function startIter(track, id, force = false) {
 // ─── Finalize iteration modal ─────────────────────────────────────────────
 //
 // Verification surface for an iteration. Server already committed each task
-// as it passed (manual approve → handleVerify, auto-verify pass → server
-// commit + done). Finalize itself is now: tick off "How to verify" steps
-// per task, optionally bulk-promote leftover passed-auto tasks to done,
-// generate CHECKLIST.md. No git merge here.
+// (auto_verify tasks: auto-approved on submit; manual tasks: committed on
+// user approve via the Verify panel). Finalize itself just runs the user
+// through "How to verify" per task and writes CHECKLIST.md.
 
 async function openFinalizeModal(track, id) {
   let info;
@@ -424,7 +423,7 @@ async function openFinalizeModal(track, id) {
 
   const tasks = info.tasks || [];
   const incomplete = info.incomplete || [];
-  const closed = tasks.filter(t => t.status === 'done' || t.status === 'passed-auto');
+  const closed = tasks.filter(t => t.status === 'done');
 
   const checklistState = []; // [{taskId, line, checked}]
   for (const t of closed) {
@@ -465,12 +464,13 @@ async function openFinalizeModal(track, id) {
   const renderSummary = () => {
     const parts = [];
     for (const t of tasks) {
-      const tag = t.status === 'passed-auto' || t.status === 'done' ? '✓'
-                : t.status === 'red-auto' ? '✗'
-                : t.status === 'awaiting-unity' ? '…'
+      const tag = t.status === 'done' ? '✓'
+                : t.status === 'verifying' ? '…'
                 : t.status;
-      const cls = t.status === 'red-auto' ? 'fin-summary-red' : (t.status === 'done' || t.status === 'passed-auto' ? 'fin-summary-ok' : 'fin-summary-pending');
-      parts.push(`<div class="fin-summary-row ${cls}"><span class="fin-summary-tag">${escapeHtml(tag)}</span> <span class="mono">${escapeHtml(t.id)}</span> <span>${escapeHtml(t.title)}</span> <span class="muted">${escapeHtml(t.status)}${t.verify_attempts ? ` · ${t.verify_attempts} av` : ''}${t.attempts ? ` · ×${t.attempts}` : ''}</span></div>`);
+      const cls = t.status === 'done' ? 'fin-summary-ok'
+                : t.status === 'verifying' ? 'fin-summary-pending'
+                : 'fin-summary-pending';
+      parts.push(`<div class="fin-summary-row ${cls}"><span class="fin-summary-tag">${escapeHtml(tag)}</span> <span class="mono">${escapeHtml(t.id)}</span> <span>${escapeHtml(t.title)}</span> <span class="muted">${escapeHtml(t.status)}${t.attempts ? ` · ×${t.attempts}` : ''}</span></div>`);
     }
     return parts.join('');
   };

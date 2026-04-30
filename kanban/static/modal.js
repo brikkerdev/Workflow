@@ -72,7 +72,7 @@ async function openModal(id, opts = {}) {
   // sits at the top of modal-body before any task info.
   const verifyBtn = document.getElementById('m-verify-btn');
   if (verifyBtn) verifyBtn.style.display = 'none';
-  MODAL_VERIFY_OPEN = t.status === 'verifying' || t.status === 'passed-auto' || t.status === 'red-auto' || !!opts.verify;
+  MODAL_VERIFY_OPEN = t.status === 'verifying' || !!opts.verify;
   MODAL_VERIFY_ITEMS = [];
   MODAL_VERIFY_SUMMARY = '';
   renderVerifyPanel();

@@ -20,18 +20,15 @@ import {
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
-  handleAutoVerifyStart, handleAutoVerifyResult, handleHowToVerify, handleVerifyQueueList,
+  handleHowToVerify,
   handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
   handleIterFinalizeInfo, handleIterFinalize,
-  applyVerifyJobResult,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
   handleAgentLoopDecide, handleNextTask,
 } from './lib/handlers.mjs';
 import { startInstanceMonitor } from './lib/instance_monitor.mjs';
 import { startStatsPoller } from './lib/stats_poller.mjs';
-import { startVerifyWorker, registerRunner, deleteJob as deleteVerifyJob } from './lib/verify_queue.mjs';
-import { unityRunner } from './lib/unity_runner.mjs';
 
 function matchAttachment(p) {
   const m = /^\/api\/task\/([^/]+)\/attachments(?:\/(.+))?$/.exec(p);
@@ -65,7 +62,6 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/agents') return handleAgentsList(res);
       if (p === '/api/stats') return handleStatsAggregate(res);
       if (p === '/api/instances') return handleInstancesList(res);
-      if (p === '/api/verify-queue') return handleVerifyQueueList(res);
 
       let m;
       m = /^\/api\/instance\/([^/]+)$/.exec(p);
@@ -87,7 +83,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|auto-verify-start|auto-verify-result|how-to-verify)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|how-to-verify)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -97,8 +93,6 @@ const server = http.createServer(async (req, res) => {
         if (action === 'note') return handleAppendNote(req, res, tid);
         if (action === 'subtasks') return handleSubtasks(req, res, tid);
         if (action === 'stats') return handleRecordStats(req, res, tid);
-        if (action === 'auto-verify-start') return handleAutoVerifyStart(req, res, tid);
-        if (action === 'auto-verify-result') return handleAutoVerifyResult(req, res, tid);
         if (action === 'how-to-verify') return handleHowToVerify(req, res, tid);
       }
 
@@ -195,18 +189,6 @@ logger.info('kanban', `open http://${args.host}:${args.port}`);
 server.listen(args.port, args.host);
 startInstanceMonitor();
 startStatsPoller();
-
-registerRunner('unity', unityRunner);
-
-startVerifyWorker((job, result) => {
-  try {
-    applyVerifyJobResult(job, result);
-  } catch (e) {
-    logger.error('kanban', `applyVerifyJobResult failed for ${job.id}`, e);
-  }
-  // Whatever happened, retire the job from disk now that the task carries the outcome.
-  deleteVerifyJob(job.id);
-});
 
 // Watch .workflow/ for external edits (agents writing task files etc.)
 try {

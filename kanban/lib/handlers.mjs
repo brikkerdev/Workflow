@@ -4,10 +4,8 @@ import { spawnSync } from 'node:child_process';
 import {
   VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
   ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR, AGENTS_DIR,
-  AUTO_VERIFY_REWORK_LIMIT,
   trackDir, trackActiveFile, trackItersDir, iterDirFor,
 } from './config.mjs';
-import { enqueueVerify, listJobs as listVerifyJobs } from './verify_queue.mjs';
 import {
   closeIteration as runCloseIteration,
   getFinalizeInfo, finalizeIteration,
@@ -427,8 +425,8 @@ export function handleTask(res, tid, query = {}) {
       verify, // verification steps for the agent's awareness
     };
     if (context) out.context = context;
-    // Hint: auto-verify tasks call auto_verify_* MCP tools; the server
-    // commits and pushes when the run passes.
+    // Hint: auto_verify=true means the server auto-approves the agent's
+    // submit and commits without waiting for the user.
     if (fm.auto_verify === 'true' || fm.auto_verify === true) out.auto_verify = true;
     if (Array.isArray(fm.expected_files) && fm.expected_files.length) out.expected_files = fm.expected_files;
     if (fm.unity_verify === 'true' || fm.unity_verify === true) out.unity_verify = true;
@@ -795,7 +793,7 @@ function buildApproveBlock(attempt, summary) {
 export async function handleVerify(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
-  const verifiable = new Set(['verifying', 'in-progress', 'queued', 'passed-auto', 'red-auto']);
+  const verifiable = new Set(['verifying', 'in-progress', 'queued']);
   if (!verifiable.has(fm.status)) {
     return sendJson(res, 409, { error: `can verify only ${[...verifiable].join('/')} tasks, current: ${fm.status}` });
   }
@@ -1048,6 +1046,14 @@ export async function handleSubmitVerify(req, res, tid) {
       markExiting(inst.id, 'deferred_precompact');
     }
   }
+  // Auto-verify tasks: server immediately approves and runs commit+push,
+  // landing the task at done without waiting for user review. Manual tasks
+  // sit at verifying until the user approves through the kanban panel.
+  const isAuto = fm.auto_verify === 'true' || fm.auto_verify === true;
+  if (isAuto) {
+    setImmediate(() => commitAndFinish(tid, summary));
+    return sendJson(res, 202, { ok: true, status: 'auto-approving', task_id: tid });
+  }
   return sendJson(res, 200, { ok: true, status: fm.status });
 }
 
@@ -1297,90 +1303,6 @@ export async function handleNextTask(req, res) {
   });
 }
 
-// ---------- Auto-verify lifecycle ----------
-
-// POST /api/task/:id/auto-verify-start
-// Agent declares it has finished editing and is starting its self-verify run.
-// in-progress -> auto-verifying.
-export async function handleAutoVerifyStart(req, res, tid) {
-  const [p, fm, body] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'in-progress') {
-    return sendJson(res, 409, { error: `can start auto-verify only from in-progress, current: ${fm.status}` });
-  }
-  fm.status = 'auto-verifying';
-  fm.verify_attempts = Number(fm.verify_attempts || 0) + 1;
-  saveTask(p, fm, body);
-  return sendJson(res, 200, { ok: true, status: fm.status, attempt: fm.verify_attempts });
-}
-
-// POST /api/task/:id/auto-verify-result
-// Body: { passed: bool, log: string, needs_unity?: bool, unity_payload?: {...} }
-// Outcomes (server owns the commit — agents never run git):
-//   passed=true     -> server commits agent's edits in ROOT, status = done
-//   needs_unity     -> awaiting-unity, enqueue verify_queue job; on Unity pass
-//                      the worker calls applyVerifyJobResult which commits
-//                      and lands the task at done
-//   passed=false    -> rework loop (in-progress, attempt++) until limit -> red-auto
-export async function handleAutoVerifyResult(req, res, tid) {
-  const [p, fm, body] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'auto-verifying' && fm.status !== 'awaiting-unity') {
-    return sendJson(res, 409, { error: `can submit auto-verify only from auto-verifying/awaiting-unity, current: ${fm.status}` });
-  }
-  let payload = {}; try { payload = await readBody(req); } catch (e) {
-    return sendJson(res, 400, { error: `bad json: ${e.message}` });
-  }
-  const passed = !!payload.passed;
-  const needsUnity = !!payload.needs_unity;
-  const log = String(payload.log || '').trim();
-  const attempt = Number(fm.verify_attempts || 1);
-  const limit = Number(fm.auto_verify_limit || AUTO_VERIFY_REWORK_LIMIT);
-  const ts = fmtDate();
-
-  // Defer to Unity: hand off to verify queue. The Unity batch run inspects
-  // the agent's still-uncommitted edits in ROOT; the worker commits later.
-  if (needsUnity && fm.status === 'auto-verifying') {
-    const jobId = enqueueVerify({
-      taskId: tid,
-      iteration: fm.iteration || null,
-      kind: 'unity',
-      resourceTags: ['unity_editor'],
-      payload: payload.unity_payload || {},
-      instanceId: payload.instance_id || null,
-    });
-    fm.status = 'awaiting-unity';
-    fm.verify_job_id = jobId;
-    const block = `### Auto-verify deferred to Unity — attempt ${attempt} — ${ts}\n\nJob ${jobId} queued (resource: unity_editor).`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
-    return sendJson(res, 200, { ok: true, status: fm.status, job_id: jobId });
-  }
-
-  if (passed) {
-    const block0 = `### Auto-verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block0));
-    try { releaseExpectedFiles(tid); } catch {}
-    sendJson(res, 202, { ok: true, status: 'committing', task_id: tid });
-    setImmediate(() => commitAndFinish(tid, ''));
-    return;
-  }
-
-  // Failed.
-  if (attempt >= limit) {
-    fm.status = 'red-auto';
-    fm.auto_verify_status = 'red';
-    const block = `### Auto-verify exhausted — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
-    try { releaseExpectedFiles(tid); } catch {}
-    return sendJson(res, 200, { ok: true, status: fm.status, parked: true });
-  }
-  // Rework: hand back to in-progress for the same agent.
-  fm.status = 'in-progress';
-  const block = `### Auto-verify failed — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}\n\nAgent should rework and re-run auto-verify.`;
-  saveTask(p, fm, appendToSection(body, 'Notes', block));
-  return sendJson(res, 200, { ok: true, status: fm.status, rework: true, attempts_left: limit - attempt });
-}
-
 // POST /api/task/:id/how-to-verify  body: { content: "markdown" }
 // Agent writes the user-facing checklist after auto-verify passes.
 export async function handleHowToVerify(req, res, tid) {
@@ -1395,14 +1317,9 @@ export async function handleHowToVerify(req, res, tid) {
   return sendJson(res, 200, { ok: true });
 }
 
-// GET /api/verify-queue — diagnostics for the UI / monitor.
-export function handleVerifyQueueList(res) {
-  return sendJson(res, 200, { jobs: listVerifyJobs() });
-}
-
 // POST /api/track/:slug/iteration/:id/close-auto
-// Auto-iteration close ritual: merge task branches into iter/<id>, write
-// CHECKLIST.md. Does NOT merge into main — that gate is the user's job.
+// Legacy: write CHECKLIST.md for the iteration without bulk-promoting tasks.
+// Mostly subsumed by /finalize.
 export async function handleIterCloseAuto(req, res, trackSlug, iterId) {
   let payload = {}; try { payload = await readBody(req); } catch {}
   const r = runCloseIteration(trackSlug, iterId, payload || {});
@@ -1482,48 +1399,6 @@ export async function handleIterChecklistWrite(req, res, trackSlug, iterId) {
   const f = path.join(dir, match, 'CHECKLIST.md');
   fs.writeFileSync(f, content, 'utf-8');
   return sendJson(res, 200, { ok: true, path: rel(f) });
-}
-
-// Apply a finished verify_queue job's outcome to the task. Called by the
-// verify_queue worker via its onResult callback. Mirrors handleAutoVerifyResult
-// but takes server-side data instead of a request body.
-export function applyVerifyJobResult(job, result) {
-  const tid = job.task_id;
-  const [p, fm, body] = findTask(tid);
-  if (!p) {
-    logger.warn('kanban', `verify job ${job.id} for unknown task ${tid}`);
-    return;
-  }
-  if (fm.status !== 'awaiting-unity' && fm.status !== 'auto-verifying') {
-    logger.warn('kanban', `verify job ${job.id} result ignored, task ${tid} status=${fm.status}`);
-    return;
-  }
-  const ts = fmtDate();
-  const attempt = Number(fm.verify_attempts || 1);
-  const limit = Number(fm.auto_verify_limit || AUTO_VERIFY_REWORK_LIMIT);
-  const log = (result.log || '').trim();
-
-  if (result.passed) {
-    const block = `### Unity verify passed — attempt ${attempt} — ${ts}${log ? `\n\n${log}` : ''}`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
-    try { releaseExpectedFiles(tid); } catch {}
-    // Server takes the task home: commit + push + status=done. Async so the
-    // Unity worker isn't blocked on git.
-    setImmediate(() => commitAndFinish(tid, ''));
-    broadcastChange('change', { kind: 'auto_verify', task_id: tid, status: 'committing' });
-    return;
-  } else if (attempt >= limit) {
-    fm.status = 'red-auto';
-    fm.auto_verify_status = 'red';
-    const block = `### Unity verify exhausted — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
-    try { releaseExpectedFiles(tid); } catch {}
-  } else {
-    fm.status = 'in-progress';
-    const block = `### Unity verify failed — attempt ${attempt}/${limit} — ${ts}${log ? `\n\n${log}` : ''}\n\nAgent should rework and re-run auto-verify.`;
-    saveTask(p, fm, appendToSection(body, 'Notes', block));
-  }
-  broadcastChange('change', { kind: 'auto_verify', task_id: tid, status: fm.status });
 }
 
 export async function handleStatsAggregate(res) {

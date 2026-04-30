@@ -21,37 +21,21 @@ export const AGENTS_DIR = path.join(ROOT, '.claude', 'agents');
 // Static assets ship inside the Workflow repo, not the project.
 export const STATIC_DIR = path.resolve(__dirname, '..');
 
-// Task lifecycle:
-//   Manual track:  todo  ->  queued  ->  in-progress  ->  verifying  ->  done
-//   Auto track:    todo  ->  queued  ->  in-progress  ->  auto-verifying
-//                                       (-> awaiting-unity)  ->  passed-auto -> done
-//                                       (rework loop returns to in-progress; exhaust -> red-auto)
+// Task lifecycle (one path now — auto_verify just changes who approves):
+//   todo -> queued -> in-progress -> verifying -> done
+// auto_verify=true tasks land at verifying via workflow_submit_for_verify
+// and the server auto-approves immediately. Manual tasks wait for user review.
 export const VALID_STATUSES = [
-  'todo', 'queued', 'in-progress', 'verifying',
-  'auto-verifying', 'awaiting-unity', 'passed-auto', 'red-auto',
-  'done',
+  'todo', 'queued', 'in-progress', 'verifying', 'done',
 ];
 
 export const ALLOWED_TRANSITIONS = {
-  'todo':           new Set(['queued', 'in-progress']),
-  'queued':         new Set(['in-progress', 'todo']),
-  'in-progress':    new Set(['verifying', 'auto-verifying', 'queued', 'todo']),
-  'verifying':      new Set(['in-progress', 'queued', 'done', 'todo']),
-  'auto-verifying': new Set(['awaiting-unity', 'passed-auto', 'red-auto', 'in-progress', 'queued']),
-  'awaiting-unity': new Set(['auto-verifying', 'passed-auto', 'red-auto', 'in-progress']),
-  'passed-auto':    new Set(['done', 'in-progress', 'queued', 'todo']),
-  'red-auto':       new Set(['in-progress', 'queued', 'todo', 'verifying']),
-  'done':           new Set(['todo']),
+  'todo':        new Set(['queued', 'in-progress']),
+  'queued':      new Set(['in-progress', 'todo']),
+  'in-progress': new Set(['verifying', 'queued', 'todo']),
+  'verifying':   new Set(['in-progress', 'queued', 'done', 'todo']),
+  'done':        new Set(['todo']),
 };
-
-// Default rework attempt cap before a failed auto-verify task is parked as red-auto.
-export const AUTO_VERIFY_REWORK_LIMIT = 3;
-
-// Worktree base — one git worktree per claimed task lives here.
-export const WORKTREES_DIR = path.join(WORKFLOW, 'worktrees');
-
-// Verification queue — serializes resource-locked verify jobs (e.g. Unity Editor).
-export const VERIFY_QUEUE_DIR = path.join(WORKFLOW, 'verify_queue');
 
 // Iteration lifecycle (stubs are valid):
 //   planned  ->  active  ->  done
