@@ -675,7 +675,7 @@ select.select-native:hover { border-color: var(--line-1); }
   position: absolute;
   top: 8px; bottom: 8px; left: 4px;
   width: 2px;
-  background: var(--agent-claude);
+  background: var(--card-stripe, var(--agent-claude));
   border-radius: 2px;
 }
 .card-header {
@@ -766,13 +766,7 @@ select.select-native:hover { border-color: var(--line-1); }
 }
 .card-verify:hover { background: rgba(16,185,129,0.10); border-color: var(--dot-done); }
 
-/* agent palette → strip color */
-.card[data-agent="claude"]   .accent-strip { background: var(--agent-claude); }
-.card[data-agent="opus"]     .accent-strip { background: var(--agent-opus); }
-.card[data-agent="sonnet"]   .accent-strip { background: var(--agent-sonnet); }
-.card[data-agent="haiku"]    .accent-strip { background: var(--agent-haiku); }
-.card[data-agent="reviewer"] .accent-strip { background: var(--agent-reviewer); }
-.card[data-agent="user"]     .accent-strip { background: var(--fg-2); }
+/* agent palette → strip color (set inline via --card-stripe in board.js) */
 
 .card.is-running .accent-strip { animation: stripPulse 1.6s ease-in-out infinite; }
 @keyframes stripPulse {

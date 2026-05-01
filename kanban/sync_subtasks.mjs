@@ -2,10 +2,12 @@
 // PostToolUse hook for TodoWrite: mirror the agent's todo list into the
 // kanban task's "Subtasks" section.
 //
-// Detects task id by scanning the transcript for "Workflow task T###" (the
-// dispatch.md prompt template). If no task id is found we exit silently —
-// this hook also fires in the user's own session where TodoWrite is not
-// task-bound.
+// Detects task id in this order:
+//   1. WORKFLOW_INSTANCE_ID env → ask kanban for that instance's current_task_id.
+//      This is the canonical path for spawned agent instances.
+//   2. Scan transcript for MCP tool results / legacy dispatch marker as fallback.
+// If no task id is found we exit silently — this hook also fires in the
+// user's own session where TodoWrite is not task-bound.
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -20,19 +22,56 @@ function readStdin() {
   });
 }
 
-function findTaskId(transcriptPath) {
+function getJSON(pathname) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1', port: 7777, path: pathname, method: 'GET', timeout: 1500,
+    }, (res) => {
+      let buf = '';
+      res.setEncoding('utf-8');
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(buf)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+async function taskIdFromInstance() {
+  const id = process.env.WORKFLOW_INSTANCE_ID;
+  if (!id) return null;
+  const inst = await getJSON(`/api/instance/${encodeURIComponent(id)}`);
+  return inst && inst.current_task_id ? inst.current_task_id : null;
+}
+
+function taskIdFromTranscript(transcriptPath) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
-  // Anchor on the exact dispatch.md prompt template so we do not match
-  // unrelated mentions of a task id in the user's own session.
-  const re = /Workflow task (T\d+)\. attempts=/;
-  // Transcripts can grow large; scan line-by-line and stop at first match.
   const text = fs.readFileSync(transcriptPath, 'utf-8');
+  // 1. Legacy dispatch.md marker.
+  const legacy = /Workflow task (T\d+)\. attempts=/.exec(text);
+  if (legacy) return legacy[1];
+  // 2. MCP tool results from workflow_next_task / workflow_claim_task contain
+  //    {"task_id":"T###",...}. Walk JSONL and return the most recent value so
+  //    we follow the agent across multiple tasks in one session.
+  let last = null;
   for (const line of text.split('\n')) {
     if (!line) continue;
-    const m = re.exec(line);
-    if (m) return m[1];
+    let row; try { row = JSON.parse(line); } catch { continue; }
+    const content = row?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const txt = typeof part?.content === 'string' ? part.content
+                : Array.isArray(part?.content) ? part.content.map(c => c?.text || '').join('') : '';
+      if (!txt) continue;
+      const m = /"task_id"\s*:\s*"(T\d+)"/.exec(txt);
+      if (m) last = m[1];
+    }
   }
-  return null;
+  return last;
 }
 
 function postSubtasks(taskId, items) {
@@ -61,7 +100,7 @@ async function main() {
   const todos = payload.tool_input?.todos;
   if (!Array.isArray(todos) || !todos.length) process.exit(0);
 
-  const tid = findTaskId(payload.transcript_path);
+  const tid = (await taskIdFromInstance()) || taskIdFromTranscript(payload.transcript_path);
   if (!tid) process.exit(0);
 
   const items = todos.map((t) => ({

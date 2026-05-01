@@ -20,6 +20,7 @@ function renderCard(t, opts = {}) {
   card.tabIndex = 0;
   card.dataset.id = t.id;
   card.dataset.agent = t.assignee || 'user';
+  card.style.setProperty('--card-stripe', window.agentColor(t.assignee || 'user'));
 
   const isUser = t.assignee === 'user';
   const ready = depsAllReady(t);

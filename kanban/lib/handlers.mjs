@@ -1,6 +1,5 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import {
   VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
   ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR, AGENTS_DIR,
@@ -27,6 +26,7 @@ import {
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
 import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
+import { commitInWorker } from './commit_queue.mjs';
 import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
 import { logger } from './logger.mjs';
 
@@ -839,9 +839,9 @@ export async function handleVerify(req, res, tid) {
   sendJson(res, 202, { result: 'committing', task_id: tid });
 
   // Run commit/push asynchronously; persist + broadcast when done.
-  setImmediate(() => {
+  setImmediate(async () => {
     try {
-      const git = runCommitPush(p, fm, summary);
+      const git = await runCommitPush(p, fm, summary);
       // Re-read latest body in case anything else mutated it.
       const cur = findTask(tid);
       if (!cur[0]) return;
@@ -900,13 +900,9 @@ function resolveTaskPaths(tid) {
   return [...ours];
 }
 
-function gitMsg(result) {
-  const raw = (result.stderr || result.stdout || '').trim();
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  return lines.pop() || '(no output)';
-}
-
-function runCommitPush(taskPath, fm, summary) {
+// Resolve paths on the main thread (needs in-memory snapshot/task state),
+// then hand the actual git work to the worker so the event loop stays free.
+async function runCommitPush(taskPath, fm, summary) {
   try {
     const tid = fm.id;
     const title = fm.title || tid;
@@ -920,30 +916,19 @@ function runCommitPush(taskPath, fm, summary) {
       return { commit: null, note: 'no changes to commit' };
     }
 
-    // Stage only this task's paths. `--all -- <pathspec>` covers add/modify/delete.
-    const add = spawnSync('git', ['add', '--all', '--', ...paths], { cwd: ROOT, encoding: 'utf-8' });
-    if (add.status !== 0) return { error: `git add failed: ${gitMsg(add)}` };
+    const message = `${tid}: ${title}\n\n${summary || ''}`.trim();
+    const result = await commitInWorker({ paths, message, author, push: true });
 
-    const diff = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: ROOT });
-    if (diff.status === 0) {
-      deleteSnapshot(tid);
-      return { commit: null, note: 'no changes to commit' };
+    if (!result.ok && !result.commit) {
+      // Pure failure — leave snapshot in place so a retry can re-resolve paths.
+      return { error: result.error || 'commit failed' };
     }
-
-    const msg = `${tid}: ${title}\n\n${summary || ''}`.trim();
-    const args = ['commit', '-m', msg];
-    if (author) { args.push(`--author=${author}`); }
-    const c = spawnSync('git', args, { cwd: ROOT, encoding: 'utf-8' });
-    if (c.status !== 0) return { error: `git commit failed: ${gitMsg(c)}` };
-
-    const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf-8' });
-    const commit = (sha.stdout || '').trim();
-
-    const push = spawnSync('git', ['push'], { cwd: ROOT, encoding: 'utf-8' });
-    if (push.status !== 0) return { error: `git push failed: ${gitMsg(push)}`, commit };
-
-    deleteSnapshot(tid);
-    return { commit };
+    if (result.commit) deleteSnapshot(tid);
+    else if (result.note) { deleteSnapshot(tid); return { commit: null, note: result.note }; }
+    // Worker may report ok:true with both `commit` and `error` (push failed).
+    return result.error
+      ? { commit: result.commit || null, error: result.error }
+      : { commit: result.commit || null };
   } catch (e) {
     return { error: String(e.message || e) };
   }
@@ -953,14 +938,14 @@ function runCommitPush(taskPath, fm, summary) {
 // commit pipeline that handleVerify (manual approve) runs, but the task is
 // already approved by virtue of auto-verify passing. Always runs async so
 // the agent's MCP call doesn't block on git.
-function commitAndFinish(tid, summary) {
+async function commitAndFinish(tid, summary) {
   try {
     const cur = findTask(tid);
     if (!cur[0]) return;
     let curFm = cur[1];
     let curBody = cur[2];
 
-    const git = runCommitPush(cur[0], curFm, summary || '');
+    const git = await runCommitPush(cur[0], curFm, summary || '');
 
     if (git.error && !git.commit) {
       const errBlock = `### Commit failed — ${fmtDate()}\n\n${git.error}`;
