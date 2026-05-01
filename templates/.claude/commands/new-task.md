@@ -11,7 +11,7 @@ argument-hint: "[track-slug]"
 2. Проверь `active` в выбранном треке. Если null — стоп: "У трека нет активной итерации. Активируй через `/activate-iter <track> <id>` или создай через `/new-iter <track>`".
 3. Через AskUserQuestion спроси:
    - **title** (free text)
-   - **assignee** (один из: `user`, `architect`, `developer`, `ugui-designer`, `pencil-designer`, `2d-artist`, `animator`, `sound-designer`, `game-designer`)
+   - **assignee** (`user` или slug агента из `.claude/agents/` — список можно получить через `curl http://127.0.0.1:7777/api/agents`)
    - **estimate** (S | M | L)
    - **deps** (T### через запятую, либо пусто)
 4. POST:

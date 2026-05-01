@@ -12,11 +12,13 @@
 // because the kanban already knows its own ROOT).
 
 import path from 'node:path';
+import { isUnityProject } from '../lib/project_kind.mjs';
 
 const KANBAN = (process.env.WORKFLOW_KANBAN || 'http://127.0.0.1:7777').replace(/\/$/, '');
 const ROOT = path.resolve(process.env.WORKFLOW_PROJECT || process.cwd());
 const INSTANCE_ID = process.env.WORKFLOW_INSTANCE_ID || null;
 const AGENT = process.env.WORKFLOW_AGENT || null;
+const UNITY = isUnityProject(ROOT);
 
 // ---------- stdio JSON-RPC framing ----------
 let stdinBuf = '';
@@ -78,6 +80,8 @@ function compactBrief(b) {
 const idArg = { task_id: { type: 'string' } };
 
 const PROTOCOL = [
+  'LANGUAGE: All free-text you produce — Notes, How to verify, submit summaries — must be in Russian. Not Ukrainian, not English. Code identifiers, file paths, and shell commands stay as they are.',
+  '',
   '1. workflow_claim_task(id) — sets in-progress, returns brief + rework notes if any.',
   '2. Plan your work via the built-in TodoWrite tool and tick items off as you',
   '   go. A hook auto-mirrors your todo list into the task\'s "Subtasks" section,',
@@ -93,8 +97,13 @@ const PROTOCOL = [
   '   criterion (paths, commands, exact expected output). It is shown at the',
   '   top of the kanban Verify panel; if it is empty or vague the user cannot',
   '   test your work. Use Edit to fill it in.',
-  '5. workflow_submit_for_verify(id, summary) — when done.',
-  'Do NOT git commit/push. Server handles that on user approval.',
+  '5. workflow_submit_for_verify(id, summary) — when done. Always the same call,',
+  '   regardless of auto_verify. Server commits and pushes either way:',
+  '   - auto_verify tasks: server auto-approves on submit and lands the task at done.',
+  '   - manual tasks: task sits at verifying until the user approves through the kanban.',
+  '   For auto_verify tasks you are responsible for running your own self-checks',
+  '   (lint/typecheck/build/unit tests) before submitting.',
+  'Do NOT run git yourself — server owns commits and pushes.',
 ].join('\n');
 
 const tools = [
@@ -184,6 +193,16 @@ const tools = [
     }),
   },
   {
+    name: 'workflow_set_how_to_verify',
+    description: 'Replace the "How to verify" section of the task with a user-facing checklist. Call this AFTER auto-verify passes — the user reads this to manually validate runtime behavior.',
+    inputSchema: {
+      type: 'object',
+      properties: { task_id: { type: 'string' }, content: { type: 'string' } },
+      required: ['task_id', 'content'],
+    },
+    handler: async ({ task_id, content }) => api('POST', `/api/task/${encodeURIComponent(task_id)}/how-to-verify`, { content }),
+  },
+  {
     name: 'workflow_next_task',
     description: 'Pop next queued task for this agent and atomically claim it. Use inside the spawned-agent loop. Returns { empty: true } if queue empty, otherwise { task_id, status, attempts }.',
     inputSchema: {
@@ -213,6 +232,39 @@ const tools = [
     },
   },
 ];
+
+if (UNITY) {
+  tools.push(
+    {
+      name: 'workflow_unity_log_mark',
+      description: 'Snapshot the current Unity Editor.log offset. Save the result and pass it to workflow_unity_log_since after running an action so you only see lines your action produced (not other agents).',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => {
+        const { logMark } = await import('../lib/unity_log.mjs');
+        return logMark();
+      },
+    },
+    {
+      name: 'workflow_unity_log_since',
+      description: 'Read Unity Editor.log lines appended since a prior mark. Optional grep regex filter. Returns { lines, errors, warnings }.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mark: { type: 'object', description: 'Result of workflow_unity_log_mark' },
+          grep: { type: 'string', description: 'Optional regex (case-insensitive) to filter lines' },
+          limit: { type: 'integer', minimum: 1, default: 200 },
+        },
+        required: ['mark'],
+      },
+      handler: async ({ mark, grep, limit = 200 }) => {
+        const { readLogSince, classifyLines } = await import('../lib/unity_log.mjs');
+        const lines = readLogSince(mark, { grep, limit });
+        const cls = classifyLines(lines);
+        return { lines, errors: cls.errors, warnings: cls.warnings };
+      },
+    },
+  );
+}
 
 // ---------- JSON-RPC dispatch ----------
 async function handle(msg) {
@@ -259,7 +311,7 @@ async function handle(msg) {
   }
 }
 
-log(`up · kanban=${KANBAN} · root=${ROOT}`);
+log(`up · kanban=${KANBAN} · root=${ROOT}${UNITY ? ' · unity' : ''}`);
 
 // Bind the real claude.exe PID to this instance. The MCP server is spawned
 // directly by claude (`.mcp.json` runs `node <path>`), so process.ppid is the

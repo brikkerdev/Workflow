@@ -20,6 +20,7 @@ function renderCard(t, opts = {}) {
   card.tabIndex = 0;
   card.dataset.id = t.id;
   card.dataset.agent = t.assignee || 'user';
+  card.style.setProperty('--card-stripe', window.agentColor(t.assignee || 'user'));
 
   const isUser = t.assignee === 'user';
   const ready = depsAllReady(t);
@@ -37,8 +38,7 @@ function renderCard(t, opts = {}) {
 
   // meta chips
   const depChips = (t.deps || []).map(id => {
-    const dt = STATE.taskIndex[id];
-    const ok = dt && dt.status === 'done';
+    const ok = depStatusOf(id) === 'done';
     return `<span class="chip ${ok ? 'chip-dep-ready' : 'chip-dep-wait'}">${ok ? '✓' : '·'} ${escapeHtml(id)}</span>`;
   }).join('');
   const estChip = t.estimate ? `<span class="chip chip-est">${escapeHtml(t.estimate)}</span>` : '';
@@ -120,7 +120,7 @@ function buildKanbanInto(container, tasks, opts = {}) {
   container.innerHTML = '';
   container.className = 'board';
   const byCol = Object.fromEntries(COLUMNS.map(c => [c.key, []]));
-  for (const t of tasks) byCol[colForStatus(t.status)].push(t);
+  for (const t of tasks) byCol[colForTask(t)].push(t);
 
   for (const col of COLUMNS) {
     const node = document.createElement('div');
@@ -129,7 +129,7 @@ function buildKanbanInto(container, tasks, opts = {}) {
 
     const list = byCol[col.key];
     const empty = list.length === 0
-      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'review' ? 'nothing to review' : col.key === 'blocked' ? 'no blockers' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
+      ? `<div class="column-empty">${col.key === 'backlog' ? 'no backlog' : col.key === 'pending' ? 'no waiting tasks' : col.key === 'review' ? 'nothing to review' : col.key === 'done' ? 'no completed tasks' : 'empty'}</div>`
       : '';
 
     node.innerHTML = `
@@ -153,13 +153,26 @@ function buildKanbanInto(container, tasks, opts = {}) {
       const id = e.dataTransfer.getData('text/plain');
       if (!id) return;
       const t = STATE.taskIndex[id];
+      if (!t) {
+        showDragReason(`${id}: unknown — refresh`, e.clientX, e.clientY);
+        return;
+      }
+      // Pending is auto-managed (set by handleIterStart on todo+open-deps).
+      // Manual drops into it would be confusing — refuse.
+      if (col.key === 'pending') {
+        showDragReason(`pending is auto-managed`, e.clientX, e.clientY);
+        return;
+      }
       const newStatus = statusForCol(col.key);
       if (t && !depsAllReady(t) && (col.key === 'in-progress' || col.key === 'review' || col.key === 'done')) {
         showDragReason(`${id}: unmet deps`, e.clientX, e.clientY);
         return;
       }
+      // Leaving Pending: clear the auto_dispatch flag so the cascade doesn't
+      // re-fire it.
+      const fromPending = t && colForTask(t) === 'pending';
       const onMove = opts.onMove || moveTask;
-      await onMove(id, newStatus);
+      await onMove(id, newStatus, { clearAutoDispatch: fromPending });
     });
     if (list.length) {
       for (const t of list) body.appendChild(renderCard(t, opts));
@@ -184,17 +197,24 @@ function showDragReason(text, x, y) {
   DRAG_REASON_TIMER = setTimeout(() => { el.remove(); }, 1400);
 }
 
-async function moveTask(id, newStatus) {
+async function moveTask(id, newStatus, opts = {}) {
   const t = STATE.taskIndex[id];
-  if (!t || t.status === newStatus) return;
+  if (!t) return;
   const prevStatus = t.status;
+  const wasAutoDispatch = !!t.auto_dispatch;
+  // No-op if status unchanged AND we're not flipping the auto_dispatch flag.
+  if (prevStatus === newStatus && !opts.clearAutoDispatch) return;
+  const patch = { status: newStatus };
+  if (opts.clearAutoDispatch) patch.auto_dispatch = false;
   try {
-    await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+    await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
     toast(`${id} → ${newStatus}`, 'success', {
       undo: true,
       onUndo: async () => {
         try {
-          await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify({ status: prevStatus }) });
+          const undoPatch = { status: prevStatus };
+          if (opts.clearAutoDispatch && wasAutoDispatch) undoPatch.auto_dispatch = true;
+          await api(`/api/task/${id}`, { method: 'PATCH', body: JSON.stringify(undoPatch) });
           toast(`${id} reverted → ${prevStatus}`, 'success');
           await refresh();
         } catch (e) { toast(`undo failed: ${e.message}`, 'error'); }
@@ -299,8 +319,13 @@ function buildBoardHeader(iter) {
   const tasks = STATE.board.tasks || [];
   const total = tasks.length;
   const done = tasks.filter(t => t.status === 'done').length;
-  const taskPct = total ? Math.round(done * 100 / total) : 0;
+  const inProg = tasks.filter(t => t.status === 'in-progress' || t.status === 'queued').length;
+  const pct = total ? Math.round(done * 100 / total) : 0;
 
+  // Exit criteria are a separate signal — user-checked binary items in the
+  // iteration README. Show them as a side counter, not the main progress bar
+  // (otherwise the bar sits at 0% until the user manually ticks them, even
+  // when every task is done).
   let critTotal = 0, critDone = 0;
   const body = iter.readme || '';
   const m = /##\s+Exit criteria\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(body);
@@ -309,23 +334,70 @@ function buildBoardHeader(iter) {
     critTotal = lines.length;
     critDone = lines.filter(l => /\[[xX]\]/.test(l)).length;
   }
-  const critPct = critTotal ? Math.round(critDone * 100 / critTotal) : taskPct;
 
   const trackPart = track ? `<span class="board-title">${escapeHtml(track)}</span><span class="muted mono t-12">/</span>` : '';
+  const isActive = iter.status === 'active';
+  const isStarted = !!(iter.fm?.started || iter.started);
+  const startBtn = isActive && !isStarted
+    ? `<button class="btn btn-sm" id="board-start-iter" title="Dispatch every todo task in this iteration to its agent">▷ Start iteration</button>`
+    : '';
+  const restartBtn = isActive && isStarted
+    ? `<button class="btn btn-sm" id="board-restart-iter" title="Re-dispatch: queue any new todo tasks added after the first start">↻ Re-dispatch</button>`
+    : '';
+  const finalizeBtn = isActive
+    ? `<button class="btn btn-sm" id="board-finalize-iter" title="Review checklist and merge auto/iter-${escapeHtml(String(iter.id || ''))} into a target branch">✓ Finalize</button>`
+    : '';
   wrap.innerHTML = `
     <div class="board-title-row">
       <span class="board-iter-glyph" style="color:var(--iter-active)">●</span>
       ${trackPart}
       <span class="board-title" style="color:var(--fg-1)">${escapeHtml(iter.id || '')} ${escapeHtml(iter.slug || '')}</span>
       <span class="board-iter-meta">— ${escapeHtml(title)}</span>
+      <span class="board-iter-actions">${startBtn} ${restartBtn} ${finalizeBtn}</span>
     </div>
     <div class="board-progress">
-      <span class="label">${critTotal ? 'Exit criteria' : 'Tasks'}</span>
-      <div class="progress-track"><div class="progress-fill" style="width:${critPct}%"></div></div>
-      <span>${critTotal ? `${critDone} / ${critTotal}` : `${done} / ${total}`}</span>
+      <span class="label">Tasks</span>
+      <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <span>${done} / ${total} done${inProg ? ` · ${inProg} active` : ''}${critTotal ? ` · exit ${critDone}/${critTotal}` : ''}</span>
     </div>
   `;
+  if (isActive) {
+    const startEl = wrap.querySelector('#board-start-iter');
+    if (startEl) startEl.addEventListener('click', () => startBoardIteration(track, iter.id, false));
+    const restartEl = wrap.querySelector('#board-restart-iter');
+    if (restartEl) restartEl.addEventListener('click', () => startBoardIteration(track, iter.id, true));
+    const finalizeEl = wrap.querySelector('#board-finalize-iter');
+    if (finalizeEl) finalizeEl.addEventListener('click', () => openFinalizeModal(track, iter.id));
+  }
   return wrap;
+}
+
+async function startBoardIteration(track, iterId, force = false) {
+  if (!track) { toast('no track context — open a specific track to start its iteration', 'error'); return; }
+  if (!iterId) { toast('no iteration selected', 'error'); return; }
+  if (!await confirmModal({
+    title: force ? 'Re-dispatch iteration' : 'Start iteration',
+    message: force
+      ? `Re-dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b>? Already-running tasks are untouched; this picks up todos added after the first start.`
+      : `Dispatch every <b>todo</b> task in iter <b>${escapeHtml(iterId)}</b> to its agent? Agents will start pulling tasks from the queue immediately.`,
+    confirmText: force ? 'Re-dispatch' : 'Dispatch all',
+  })) return;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(iterId)}/start`, {
+      method: 'POST', body: JSON.stringify(force ? { force: true } : {}),
+    });
+    const skipped = (r.skipped || []).length;
+    const queued = (r.queued || []).length;
+    const pending = (r.pending || []).length;
+    const head = `queued ${queued}${pending ? ` · pending ${pending} (auto-dispatch when deps complete)` : ''}`;
+    if (skipped) {
+      const reasons = r.skipped.slice(0, 3).map(s => `${s.id}: ${s.reason}`).join('; ');
+      toast(`${head} · skipped ${skipped} (${reasons}${skipped > 3 ? '…' : ''})`, (queued || pending) ? 'success' : 'error');
+    } else {
+      toast(head, 'success');
+    }
+    await refresh();
+  } catch (e) { toast(`start failed: ${e.message}`, 'error'); }
 }
 
 function buildAggregateHeader(actives) {

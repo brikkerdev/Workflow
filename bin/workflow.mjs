@@ -17,11 +17,17 @@ const REPO = path.resolve(__dirname, '..');
 const KANBAN = path.join(REPO, 'kanban');
 
 function parseGlobalArgs(argv) {
-  const out = { project: null, agents: null, rest: [] };
+  const out = { project: null, agents: null, force: false, rest: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--project') out.project = path.resolve(argv[++i]);
-    else if (argv[i] === '--agents') out.agents = argv[++i];
-    else out.rest.push(argv[i]);
+    if (argv[i] === '--project') {
+      if (i + 1 >= argv.length) { console.error('[workflow] --project requires a value'); process.exit(2); }
+      out.project = path.resolve(argv[++i]);
+    } else if (argv[i] === '--agents') {
+      if (i + 1 >= argv.length) { console.error('[workflow] --agents requires a value (or "none"/"all")'); process.exit(2); }
+      out.agents = argv[++i];
+    } else if (argv[i] === '--force') {
+      out.force = true;
+    } else out.rest.push(argv[i]);
   }
   if (!out.project) out.project = process.env.WORKFLOW_PROJECT
     ? path.resolve(process.env.WORKFLOW_PROJECT)
@@ -37,7 +43,9 @@ Usage:
 
 Commands:
   up [--port N] [--host H]   Start the local kanban web server and open the browser.
-  init [--agents <list>]     Scaffold .workflow/ + .claude/ in current project.
+  init [--agents <list>] [--force]
+                             Scaffold .workflow/ + .claude/ in current project.
+                             --force re-runs even if .workflow/ already exists.
   agents                     List available and installed agents.
   spawn <agent>              Spawn a new agent instance terminal (requires running kanban).
   migrate [--apply]          Migrate legacy layout to new track-as-timeline structure.
@@ -100,7 +108,9 @@ function findLinuxTerminal() {
   // Prefer the running terminal first (e.g. kitty, alacritty set $TERM_PROGRAM or $TERMINAL)
   const hint = process.env.TERM_PROGRAM || process.env.TERMINAL || '';
   const candidates = [hint, 'kitty', 'alacritty', 'wezterm', 'gnome-terminal', 'konsole', 'tilix', 'xterm'];
-  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const extraDirs = [path.join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin'];
+  const dirs = [...(process.env.PATH || '').split(path.delimiter).filter(Boolean), ...extraDirs];
   for (const name of candidates) {
     if (!name) continue;
     for (const d of dirs) {
@@ -170,7 +180,9 @@ function openBrowser(url) {
     } else if (process.platform === 'darwin') {
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
     } else {
-      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+      const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+      child.on('error', e => console.log(`[workflow] open ${url} manually (${e.message})`));
+      child.unref();
     }
   } catch (e) {
     console.log(`[workflow] open ${url} manually (${e.message})`);
@@ -187,8 +199,7 @@ function cmdUp(project, rest) {
   const env = { ...process.env, WORKFLOW_PROJECT: project };
   const args = [path.join(KANBAN, 'server.mjs'), ...rest];
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
-  // Open browser after a brief delay so the listener is up.
-  setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
+  // setTimeout(() => openBrowser(`http://127.0.0.1:${port}`), 600);
   child.on('exit', code => process.exit(code ?? 0));
 }
 
@@ -434,8 +445,14 @@ function cmdAgents(project) {
   console.log('To add: workflow init --agents <name1,name2>  (re-running init is safe)');
 }
 
-function cmdInit(project, agentsArg) {
+function cmdInit(project, agentsArg, force = false) {
   const tplRoot = path.join(REPO, 'templates');
+  const wfTargetCheck = path.join(project, '.workflow');
+  if (fs.existsSync(wfTargetCheck) && !force) {
+    console.log(`[workflow] ${wfTargetCheck} already exists — pass --force to re-seed templates and agents`);
+    console.log('[workflow] (this is a no-op; templates already sync on `workflow up`)');
+    return;
+  }
   console.log(`[workflow] scaffolding into ${project}`);
 
   // .workflow/ skeleton (new layout — iterations live inside tracks)
@@ -503,11 +520,11 @@ function cmdInit(project, agentsArg) {
 }
 
 const [, , sub, ...rawRest] = process.argv;
-const { project, agents, rest } = parseGlobalArgs(rawRest);
+const { project, agents, force, rest } = parseGlobalArgs(rawRest);
 
 switch (sub) {
   case 'up':           cmdUp(project, rest); break;
-  case 'init':         cmdInit(project, agents); break;
+  case 'init':         cmdInit(project, agents, force); break;
   case 'agents':       cmdAgents(project); break;
   case 'spawn':        cmdSpawn(project, rest); break;
   case 'migrate':      cmdMigrate(project, rest); break;

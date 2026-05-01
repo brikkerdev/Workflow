@@ -6,7 +6,7 @@
 import http from 'node:http';
 import url from 'node:url';
 import fs from 'node:fs';
-import { ROOT, WORKFLOW } from './lib/config.mjs';
+import { ROOT, WORKFLOW, QUEUE_DIR, TRACKS_DIR, ARCHIVE_DIR } from './lib/config.mjs';
 import { logger } from './lib/logger.mjs';
 import { exists } from './lib/repo.mjs';
 import { sendJson, serveStatic, attachSseClient, broadcastChange } from './lib/http.mjs';
@@ -20,6 +20,9 @@ import {
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
   handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
+  handleHowToVerify,
+  handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
+  handleIterFinalizeInfo, handleIterFinalize,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
   handleAgentLoopDecide, handleNextTask,
@@ -67,6 +70,10 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleAgent(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrack(res, decodeURIComponent(m[1]));
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleIterChecklistRead(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/finalize-info$/.exec(p);
+      if (m) return handleIterFinalizeInfo(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
       const att = matchAttachment(p);
       if (att) {
@@ -76,7 +83,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|how-to-verify)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -86,6 +93,7 @@ const server = http.createServer(async (req, res) => {
         if (action === 'note') return handleAppendNote(req, res, tid);
         if (action === 'subtasks') return handleSubtasks(req, res, tid);
         if (action === 'stats') return handleRecordStats(req, res, tid);
+        if (action === 'how-to-verify') return handleHowToVerify(req, res, tid);
       }
 
       // tracks
@@ -112,17 +120,23 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iterations\/reorder$/.exec(p);
       if (m) return handleIterReorder(req, res, decodeURIComponent(m[1]));
-      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive)$/.exec(p);
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto|start|finalize)$/.exec(p);
       if (m) {
         const ts = decodeURIComponent(m[1]); const iid = decodeURIComponent(m[2]); const action = m[3];
         if (action === 'activate') return handleIterActivate(res, ts, iid);
         if (action === 'archive') return handleIterArchive(req, res, ts, iid);
+        if (action === 'close-auto') return handleIterCloseAuto(req, res, ts, iid);
+        if (action === 'start') return handleIterStart(req, res, ts, iid);
+        if (action === 'finalize') return handleIterFinalize(req, res, ts, iid);
       }
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/tasks$/.exec(p);
       if (m) return handleTaskCreate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
       const att = matchAttachment(p);
       if (att && !att.name) return handleUploadAttachment(req, res, att.tid);
+    } else if (req.method === 'PUT') {
+      let m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleIterChecklistWrite(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
     } else if (req.method === 'PATCH') {
       let m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrackUpdate(req, res, decodeURIComponent(m[1]));
@@ -170,8 +184,22 @@ if (!exists(WORKFLOW)) {
   process.exit(1);
 }
 
+// Ensure required subdirs exist — older projects may pre-date some of these,
+// and server code assumes they're always present.
+for (const d of [QUEUE_DIR, TRACKS_DIR, ARCHIVE_DIR]) {
+  try { fs.mkdirSync(d, { recursive: true }); } catch (e) { logger.warn('kanban', `mkdir ${d} failed: ${e.message}`); }
+}
+
 logger.info('kanban', `root: ${ROOT}`);
 logger.info('kanban', `open http://${args.host}:${args.port}`);
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    logger.error('kanban', `port ${args.port} busy — pass --port <N> or stop the other instance`);
+  } else {
+    logger.error('kanban', `server error: ${e.message}`);
+  }
+  process.exit(1);
+});
 server.listen(args.port, args.host);
 startInstanceMonitor();
 startStatsPoller();

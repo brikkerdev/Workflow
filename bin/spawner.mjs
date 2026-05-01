@@ -31,6 +31,32 @@ function findOnPath(name) {
   return null;
 }
 
+// Mirror of kanban/static/agentColors.js — keep in sync.
+const AGENT_COLORS = {
+  'architect':       '#3B9EFF',
+  'developer':       '#22E0B8',
+  'game-designer':   '#FFB020',
+  'pencil-designer': '#FF4F9E',
+  'sound-designer':  '#3DDC84',
+};
+function hashHue(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  const toHex = v => v.toString(16).padStart(2, '0');
+  return '#' + toHex(f(0)) + toHex(f(8)) + toHex(f(4));
+}
+function agentColor(name) {
+  if (!name) return null;
+  return AGENT_COLORS[name] || hslToHex(hashHue(name), 80, 65);
+}
+
 function findLinuxTerminal() {
   const hint = process.env.TERM_PROGRAM || process.env.TERMINAL || '';
   const candidates = [hint, 'kitty', 'alacritty', 'wezterm', 'gnome-terminal', 'konsole', 'tilix', 'xterm'];
@@ -88,13 +114,30 @@ export async function spawnInstance({ agent, instanceId, project, kanbanUrl = 'h
     const argStr = claudeArgs.map(a => `"${a.replace(/"/g, '""')}"`).join(' ');
     const scriptContent = `@echo off\r\n${envLines}\r\ncd /D "${project}"\r\n"${claudePath}" ${argStr}\r\n`;
     fs.writeFileSync(tmpScript, scriptContent, 'utf8');
-    // Use windowsVerbatimArguments so we own the exact command string — avoids
-    // Node.js double-quoting the title or tmpScript path.
+    // Prefer Windows Terminal (wt.exe) — opens a new tab with --tabColor set
+    // to the agent's palette colour. Fall back to legacy `cmd.exe /c start`
+    // when wt.exe is not on PATH (older Windows / no WT installed).
+    const wtPath = findOnPath('wt');
+    const color = agentColor(agent);
     const quotedProject = `"${project}"`;
     const quotedScript = `"${tmpScript}"`;
+    let cmdLine;
+    let exe;
+    if (wtPath && color) {
+      // wt.exe new-tab --title <t> --tabColor <#hex> -d <proj> cmd.exe /c <script>
+      // -w workflow: route every agent tab into a single named WT window so
+      // tabs aggregate instead of scattering across random existing windows.
+      cmdLine = `-w workflow new-tab --title "${title}" --tabColor "${color}" -d ${quotedProject} cmd.exe /c ${quotedScript}`;
+      exe = wtPath;
+    } else {
+      cmdLine = `/c start "${title}" /D ${quotedProject} cmd.exe /c ${quotedScript}`;
+      exe = 'cmd.exe';
+    }
+    // Use windowsVerbatimArguments so we own the exact command string — avoids
+    // Node.js double-quoting the title or tmpScript path.
     const child = spawn(
-      'cmd.exe',
-      [`/c start "${title}" /D ${quotedProject} cmd.exe /c ${quotedScript}`],
+      exe,
+      [cmdLine],
       { cwd: project, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true },
     );
     child.unref();

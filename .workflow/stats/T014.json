@@ -1,0 +1,21 @@
+{
+  "task_id": "T014",
+  "by_session": {
+    "6a18adaa-f20a-41e4-b5e7-2a5ebad531c9:T014": {
+      "ts": "2026-04-30T08:30:13.756Z",
+      "input": 202,
+      "output": 103135,
+      "cache_read": 24529123,
+      "cache_creation": 643079,
+      "messages": 88
+    }
+  },
+  "totals": {
+    "input": 202,
+    "output": 103135,
+    "cache_read": 24529123,
+    "cache_creation": 643079,
+    "messages": 88,
+    "runs": 1
+  }
+}

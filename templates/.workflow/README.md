@@ -25,7 +25,7 @@ Iteration-based development board. File-based, git-friendly, cross-session.
 Одна единица работы. Имеет:
 - `id` — `T001`, `T002`, …
 - `assignee` — кто делает (`user` или имя зарегистрированного агента из `.claude/agents/`)
-- `status` — `todo` | `in-progress` | `review` | `done` | `blocked`
+- `status` — `todo` | `in-progress` | `review` | `done`
 - `deps` — список id, от которых зависит. Стартовать таск с незакрытыми deps нельзя.
 - `estimate` — `S` | `M` | `L`
 - **Goal** — одно предложение
@@ -84,7 +84,6 @@ Web-канбан с drag-drop живёт в `tools/kanban/`. Запуск: `node
 ## Правила
 
 - **Atomic status changes**. Меняй `status` после фактического перехода, не до.
-- **Blocked явно**. Если таск встал — `status: blocked`, в `Notes` причина и какой таск/решение разблокирует.
 - **How to verify обязателен**. Без него таск нельзя `dispatch`-нуть.
 - **One assignee per task**. Если работа разделяется — это два таска с deps.
 - **Отчёт агента — в Notes**. Не в сторонних файлах. Чтение таска = полная история.
@@ -94,14 +93,11 @@ Web-канбан с drag-drop живёт в `tools/kanban/`. Запуск: `node
 
 `assignee: user` — делаешь сам.
 
-`assignee: <agent-name>` — должен соответствовать файлу в `.claude/agents/<agent-name>.md`. Текущие зарегистрированные:
+`assignee: <agent-name>` — должен соответствовать файлу в `.claude/agents/<agent-name>.md`. Базовый набор шаблонов:
 - `architect` — дизайн решений, планы
-- `developer` — Unity/C# код
-- `ugui-designer` — UGUI-сборка экранов
+- `developer` — реализация фич, рефакторинг, баг-фиксы
 - `pencil-designer` — .pen дизайн через Pencil MCP
-- `2d-artist` — спрайты, иконки, ASCII-арт
-- `animator` — DOTween-анимации
 - `sound-designer` — SFX, UI-кит
 - `game-designer` — обсуждение механик и баланса
 
-Добавить нового агента: создать `.claude/agents/<name>.md` с frontmatter (`name`, `description`, `model`, `color`, `memory`).
+Добавить нового агента: создать `.claude/agents/<name>.md` с frontmatter (`name`, `description`, `model`, `color`, `memory`). Глобальные агенты — `~/.workflow/agents/`, перекрывают bundled.

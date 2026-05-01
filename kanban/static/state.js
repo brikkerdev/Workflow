@@ -1,20 +1,32 @@
 // 5-column model per design.
-// Maps backend status set {todo,queued,in-progress,verifying,review,blocked,done}
-// onto 5 visible columns: Backlog, In progress, Review, Blocked, Done.
+// Maps backend status set {todo,queued,in-progress,verifying,review,done} onto
+// 5 visible columns: Backlog, Pending, In progress, Review, Done.
+//
+// Pending is a virtual column: tasks with `auto_dispatch: true` (set by
+// handleIterStart on todo tasks whose deps weren't yet satisfied) live here
+// until their blockers complete and the server cascades them to In progress.
+// They have no dedicated status — colForTask() routes them by flag.
 
 const COLUMNS = [
   { key: 'backlog',     label: 'Backlog',     statuses: ['todo'],                  kbd: '1', primary: 'todo' },
-  { key: 'in-progress', label: 'In progress', statuses: ['in-progress','queued'],  kbd: '2', primary: 'in-progress' },
-  { key: 'review',      label: 'Review',      statuses: ['review','verifying'],    kbd: '3', primary: 'review' },
-  { key: 'blocked',     label: 'Blocked',     statuses: ['blocked'],               kbd: '4', primary: 'blocked' },
+  { key: 'pending',     label: 'Pending',     statuses: [],                        kbd: '2', primary: 'todo' },
+  { key: 'in-progress', label: 'In progress', statuses: ['in-progress','queued'],  kbd: '3', primary: 'in-progress' },
+  { key: 'review',      label: 'Review',      statuses: ['review','verifying'],    kbd: '4', primary: 'verifying' },
   { key: 'done',        label: 'Done',        statuses: ['done'],                  kbd: '5', primary: 'done' },
 ];
 
-const ALL_STATUSES = ['todo','queued','in-progress','verifying','review','blocked','done'];
+const ALL_STATUSES = ['todo','queued','in-progress','verifying','review','done'];
 
 function colForStatus(status) {
   const c = COLUMNS.find(x => x.statuses.includes(status));
   return c ? c.key : 'backlog';
+}
+// Tasks need both fields to bucket — pending is flag-driven, not status-driven.
+function colForTask(t) {
+  if (t && (t.auto_dispatch === true || t.auto_dispatch === 'true') && t.status === 'todo') {
+    return 'pending';
+  }
+  return colForStatus(t ? t.status : null);
 }
 function statusForCol(colKey) {
   return (COLUMNS.find(x => x.key === colKey) || COLUMNS[0]).primary;
@@ -41,6 +53,7 @@ function matchSearch(...fields) {
 function rebuildIndex() {
   STATE.taskIndex = {};
   for (const t of (STATE.board.tasks || [])) STATE.taskIndex[t.id] = t;
+  STATE.depIndex = (STATE.board && STATE.board.dep_index) || {};
 }
 
 function allTasks() {
@@ -49,17 +62,25 @@ function allTasks() {
   return out;
 }
 
+function depStatusOf(d) {
+  const t = STATE.taskIndex[d];
+  if (t) return t.status;
+  return (STATE.depIndex || {})[d] || null;
+}
+
 function depStatus(deps) {
   if (!deps || !deps.length) return { unmet: [] };
-  return { unmet: deps.filter(d => (STATE.taskIndex[d] || {}).status !== 'done') };
+  return { unmet: deps.filter(d => depStatusOf(d) !== 'done') };
 }
 
 window.COLUMNS = COLUMNS;
 window.ALL_STATUSES = ALL_STATUSES;
 window.colForStatus = colForStatus;
+window.colForTask = colForTask;
 window.statusForCol = statusForCol;
 window.STATE = STATE;
 window.rebuildIndex = rebuildIndex;
 window.allTasks = allTasks;
 window.depStatus = depStatus;
+window.depStatusOf = depStatusOf;
 window.matchSearch = matchSearch;

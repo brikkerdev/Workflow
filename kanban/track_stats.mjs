@@ -25,16 +25,61 @@ function readStdin() {
   });
 }
 
-function findTaskId(text) {
-  const m = /Workflow task (T\d+)\. attempts=/.exec(text);
-  return m ? m[1] : null;
+function findTaskIdInTranscript(text) {
+  const legacy = /Workflow task (T\d+)\. attempts=/.exec(text);
+  if (legacy) return legacy[1];
+  // MCP tool results from workflow_next_task / workflow_claim_task contain
+  // {"task_id":"T###"}. Walk JSONL and keep the most recent.
+  let last = null;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let row; try { row = JSON.parse(line); } catch { continue; }
+    const content = row?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const txt = typeof part?.content === 'string' ? part.content
+                : Array.isArray(part?.content) ? part.content.map(c => c?.text || '').join('') : '';
+      if (!txt) continue;
+      const m = /"task_id"\s*:\s*"(T\d+)"/.exec(txt);
+      if (m) last = m[1];
+    }
+  }
+  return last;
 }
 
-function sumUsage(transcriptPath) {
+function getJSON(pathname) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1', port: 7777, path: pathname, method: 'GET', timeout: 1500,
+    }, (res) => {
+      let buf = '';
+      res.setEncoding('utf-8');
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(buf)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+async function resolveTaskId(transcriptPath) {
+  const id = process.env.WORKFLOW_INSTANCE_ID;
+  if (id) {
+    const inst = await getJSON(`/api/instance/${encodeURIComponent(id)}`);
+    if (inst && inst.current_task_id) return inst.current_task_id;
+  }
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+  return findTaskIdInTranscript(fs.readFileSync(transcriptPath, 'utf-8'));
+}
+
+function sumUsage(transcriptPath, tid) {
+  if (!tid) return null;
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
   const text = fs.readFileSync(transcriptPath, 'utf-8');
-  const tid = findTaskId(text);
-  if (!tid) return null;
 
   const totals = { input: 0, output: 0, cache_read: 0, cache_creation: 0, messages: 0 };
   for (const line of text.split('\n')) {
@@ -98,8 +143,10 @@ async function main() {
   try { payload = JSON.parse(raw); } catch (e) { log('bad json:', e.message); process.exit(0); }
 
   log(`fired transcript=${payload.transcript_path || '?'} session=${payload.session_id || '?'}`);
-  const result = sumUsage(payload.transcript_path);
-  if (!result) { log('no task marker found in transcript'); process.exit(0); }
+  const tid = await resolveTaskId(payload.transcript_path);
+  if (!tid) { log('no task id found (instance lookup + transcript)'); process.exit(0); }
+  const result = sumUsage(payload.transcript_path, tid);
+  if (!result) { log(`tid=${tid} but transcript empty`); process.exit(0); }
   log(`tid=${result.tid} totals=`, JSON.stringify(result.totals));
   const sessionId = payload.session_id || 'unknown';
   const code = await postStats(result.tid, sessionId, result.totals);

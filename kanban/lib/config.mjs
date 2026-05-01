@@ -21,17 +21,19 @@ export const AGENTS_DIR = path.join(ROOT, '.claude', 'agents');
 // Static assets ship inside the Workflow repo, not the project.
 export const STATIC_DIR = path.resolve(__dirname, '..');
 
-// Task lifecycle:
-//   todo  ->  queued  ->  in-progress  ->  verifying  ->  done
-//   blocked is a side state any active status can park in.
-export const VALID_STATUSES = ['todo', 'queued', 'in-progress', 'verifying', 'blocked', 'done'];
+// Task lifecycle (one path now — auto_verify just changes who approves):
+//   todo -> queued -> in-progress -> verifying -> done
+// auto_verify=true tasks land at verifying via workflow_submit_for_verify
+// and the server auto-approves immediately. Manual tasks wait for user review.
+export const VALID_STATUSES = [
+  'todo', 'queued', 'in-progress', 'verifying', 'done',
+];
 
 export const ALLOWED_TRANSITIONS = {
-  'todo':        new Set(['queued', 'in-progress', 'blocked']),
-  'queued':      new Set(['in-progress', 'todo', 'blocked']),
-  'in-progress': new Set(['verifying', 'queued', 'blocked', 'todo']),
+  'todo':        new Set(['queued', 'in-progress']),
+  'queued':      new Set(['in-progress', 'todo']),
+  'in-progress': new Set(['verifying', 'queued', 'todo']),
   'verifying':   new Set(['in-progress', 'queued', 'done', 'todo']),
-  'blocked':     new Set(['todo', 'queued', 'in-progress']),
   'done':        new Set(['todo']),
 };
 

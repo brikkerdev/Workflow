@@ -1,17 +1,24 @@
 // Stable color per agent. Hand-picked palette for known agents,
 // hash-derived hue for anything else.
 
+// User stripe follows the theme: white on dark, black on light. Resolved at
+// call time via the special token 'theme-fg'.
 const FIXED = {
-  '2d-artist':       '#E8A87C', // warm amber
-  'animator':        '#C38EE3', // lilac
-  'architect':       '#7BB7FF', // steel blue
-  'developer':       '#6EF0D2', // cyan-mint (project accent)
-  'game-designer':   '#F0B86E', // gold
-  'pencil-designer': '#F08CC2', // pink
-  'sound-designer':  '#A0E0A0', // mint
-  'ugui-designer':   '#9AB6FF', // periwinkle
-  'user':            '#E6C68A', // sand
+  'architect':       '#3B9EFF', // electric blue
+  'developer':       '#22E0B8', // bright teal
+  'game-designer':   '#FFB020', // saturated gold
+  'pencil-designer': '#FF4F9E', // hot pink
+  'sound-designer':  '#3DDC84', // bright green
+  'user':            'theme-fg',
 };
+
+function themeFg() {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--fg-0').trim();
+    if (v) return v;
+  } catch {}
+  return '#FAFAFA';
+}
 
 function hashHue(s) {
   let h = 0;
@@ -30,8 +37,10 @@ function hslToHex(h, s, l) {
 
 function agentColor(name) {
   if (!name || name === '—') return '#5C6477';
-  if (FIXED[name]) return FIXED[name];
-  return hslToHex(hashHue(name), 55, 70);
+  const fixed = FIXED[name];
+  if (fixed === 'theme-fg') return themeFg();
+  if (fixed) return fixed;
+  return hslToHex(hashHue(name), 80, 65);
 }
 
 // soft variant for fills / chip backgrounds

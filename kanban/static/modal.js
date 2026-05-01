@@ -249,8 +249,7 @@ function renderDepsChips() {
   picker.querySelectorAll('.chip').forEach(c => c.remove());
   const input = document.getElementById('m-deps-input');
   for (const d of MODAL_DEPS) {
-    const t = STATE.taskIndex[d];
-    const ready = t && t.status === 'done';
+    const ready = depStatusOf(d) === 'done';
     const chip = document.createElement('span');
     chip.className = `chip chip-removable ${ready ? 'chip-dep-ready' : 'chip-dep-wait'}`;
     chip.innerHTML = `${ready ? '✓' : '·'} ${escapeHtml(d)}<span class="x" title="remove">×</span>`;

@@ -1,11 +1,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import {
   VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
   ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR, AGENTS_DIR,
   trackDir, trackActiveFile, trackItersDir, iterDirFor,
 } from './config.mjs';
+import {
+  closeIteration as runCloseIteration,
+  getFinalizeInfo, finalizeIteration,
+} from './iteration_close.mjs';
 import {
   exists, readText, rel,
   listTrackSlugs, readTrack, writeTrackReadme, trackActive, setTrackActive,
@@ -15,16 +18,21 @@ import {
   listAgents, findTask, saveTask, depsSatisfied, findDepCycle, getAgentModel,
 } from './repo.mjs';
 import { parseTask, serializeTask, replaceSection, appendToSection, parseChecklist, extractSection } from './frontmatter.mjs';
-import { queueCount, queueItems, writeTrigger, deleteTrigger, popNextForAssignee, peekNextForAssignee } from './queue.mjs';
+import { queueCount, queueItems, writeTrigger, deleteTrigger, popNextForAssignee, peekNextForAssignee, releaseExpectedFiles } from './queue.mjs';
 import {
   createInstance, getInstance, listInstances, updateInstance,
   removeInstance, markExiting, markDead, claimTaskForInstance, releaseTask, pidAlive,
 } from './instances.mjs';
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
-import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
+import { captureSnapshot, loadSnapshot, deleteSnapshot } from './snapshot.mjs';
+import { commitInWorker } from './commit_queue.mjs';
 import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
 import { logger } from './logger.mjs';
+import { isUnityProject } from './project_kind.mjs';
+
+const UNITY = isUnityProject(ROOT);
+let unityVerifyWarned = false;
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -64,6 +72,25 @@ function attachStats(tasks) {
   return tasks;
 }
 
+// Build { depId: status } for any deps referenced by `tasks` whose target
+// task is NOT in the returned set. Resolved against ALL tasks in the repo
+// so cross-track / cross-iteration deps don't show as unmet on the board.
+function buildDepIndex(tasks) {
+  const present = new Set(tasks.map(t => t.id));
+  const needed = new Set();
+  for (const t of tasks) {
+    for (const d of (t.deps || [])) {
+      if (!present.has(d)) needed.add(d);
+    }
+  }
+  if (!needed.size) return {};
+  const idx = {};
+  for (const t of listAllTasks()) {
+    if (needed.has(t.id)) idx[t.id] = t.status || 'todo';
+  }
+  return idx;
+}
+
 export function handleBoard(res, query = {}) {
   const want = query.track || null;
   if (want) {
@@ -72,26 +99,30 @@ export function handleBoard(res, query = {}) {
     const aid = trackActive(want);
     if (!aid) return sendJson(res, 200, envelope({
       iteration: null, track: { slug: want, fm: t.fm, body: t.body },
-      tasks: [],
+      tasks: [], dep_index: {},
     }));
     const iter = findIteration(want, aid);
+    const tasks = iter ? attachStats(listTasksInIteration(want, aid)) : [];
     return sendJson(res, 200, envelope({
       iteration: iter ? {
         id: iter.id, slug: iter.slug, dir: rel(iter.dir),
         readme: iter.body, fm: iter.fm, track: want, status: iter.status,
       } : null,
       track: { slug: want, fm: t.fm, body: t.body },
-      tasks: iter ? attachStats(listTasksInIteration(want, aid)) : [],
+      tasks,
+      dep_index: buildDepIndex(tasks),
     }));
   }
   // aggregate across active iterations
   const actives = activeIterations();
   const tasks = [];
   for (const iter of actives) tasks.push(...listTasksInIteration(iter.track, iter.id));
+  const attached = attachStats(tasks);
   return sendJson(res, 200, envelope({
     iteration: null,
     actives: actives.map(it => ({ track: it.track, id: it.id, slug: it.slug, status: it.status })),
-    tasks: attachStats(tasks),
+    tasks: attached,
+    dep_index: buildDepIndex(attached),
   }));
 }
 
@@ -374,6 +405,9 @@ export async function handleTaskCreate(req, res, trackSlug, iterId) {
 // view=notes  — { notes } only
 export function handleTask(res, tid, query = {}) {
   const view = query.view || 'full';
+  if (typeof tid !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*\d+$/.test(tid)) {
+    return sendJson(res, 400, { error: 'malformed task id' });
+  }
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
 
@@ -398,6 +432,14 @@ export function handleTask(res, tid, query = {}) {
       verify, // verification steps for the agent's awareness
     };
     if (context) out.context = context;
+    // Hint: auto_verify=true means the server auto-approves the agent's
+    // submit and commits without waiting for the user.
+    if (fm.auto_verify === 'true' || fm.auto_verify === true) out.auto_verify = true;
+    if (Array.isArray(fm.expected_files) && fm.expected_files.length) out.expected_files = fm.expected_files;
+    if (fm.unity_verify === 'true' || fm.unity_verify === true) {
+      if (UNITY) out.unity_verify = true;
+      else if (!unityVerifyWarned) { logger.warn('handlers', 'unity_verify ignored — not a Unity project'); unityVerifyWarned = true; }
+    }
     return sendJson(res, 200, out);
   }
 
@@ -487,10 +529,17 @@ export async function handlePatch(req, res, tid) {
     if (typeof v === 'string') v = v.split(',').map(s => s.trim()).filter(Boolean);
     fm.deps = v;
   }
+  if ('auto_dispatch' in patch) {
+    if (patch.auto_dispatch) fm.auto_dispatch = true;
+    else delete fm.auto_dispatch;
+  }
   let nextBody = body;
   if ('body' in patch && typeof patch.body === 'string') nextBody = patch.body;
   saveTask(p, fm, nextBody);
   fm._path = rel(p);
+  if (fm.status === 'done') {
+    try { releasePendingDispatch(); } catch {}
+  }
   sendJson(res, 200, fm);
 }
 
@@ -591,32 +640,129 @@ export function handleCancelDispatch(res, tid) {
   if (!p) return sendJson(res, 404, { error: 'task not found' });
   const removed = deleteTrigger(tid);
   let reverted = false;
+  let cleared = false;
+  if ('auto_dispatch' in fm) { delete fm.auto_dispatch; cleared = true; }
   if (fm.status === 'queued' || fm.status === 'in-progress') {
     fm.status = 'todo';
-    saveTask(p, fm, body);
     reverted = true;
   }
-  if (!removed && !reverted) {
-    return sendJson(res, 409, { error: 'nothing to stop: not queued and not in-progress' });
+  if (reverted || cleared) saveTask(p, fm, body);
+  if (!removed && !reverted && !cleared) {
+    return sendJson(res, 409, { error: 'nothing to stop: not queued, in-progress, or pending' });
   }
-  sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, queue_size: queueCount() });
+  sendJson(res, 200, { stopped: true, task_id: tid, trigger_removed: removed, reverted_to_todo: reverted, pending_cleared: cleared, queue_size: queueCount() });
+}
+
+// Internal: try to dispatch one task. Returns { ok, error?, code? } so batch
+// callers (handleIterStart) can keep going past skippable failures.
+function _dispatchInternal(tid) {
+  const [p, fm, body] = findTask(tid);
+  if (!p) return { ok: false, code: 404, error: 'task not found' };
+  if (fm.status !== 'todo') return { ok: false, code: 409, error: `status is ${fm.status}, not todo` };
+  const assignee = fm.assignee || 'user';
+  if (assignee === 'user') return { ok: false, code: 409, error: 'assignee=user, not dispatchable' };
+  if (!listAgents().includes(assignee)) return { ok: false, code: 409, error: `agent '${assignee}' not registered` };
+  const [okDeps, open] = depsSatisfied(fm.deps || []);
+  if (!okDeps) return { ok: false, code: 409, error: `open deps: ${open.join(', ')}` };
+  const cycle = findDepCycle(tid);
+  if (cycle.length) return { ok: false, code: 409, error: `circular dep: ${cycle.join(' → ')}` };
+  fm.status = 'queued';
+  if ('auto_dispatch' in fm) delete fm.auto_dispatch;
+  saveTask(p, fm, body);
+  writeTrigger(tid, fm, p, { reason: 'dispatch' });
+  return { ok: true };
+}
+
+// Scan tasks flagged for auto-dispatch (queued by handleIterStart but blocked
+// on deps at start time). Dispatch any whose deps are now satisfied. Called
+// after a task transitions to 'done' so a freshly-completed dep cascades.
+function releasePendingDispatch() {
+  const released = [];
+  for (const t of listAllTasks()) {
+    if (t.status !== 'todo') continue;
+    if (!(t.auto_dispatch === true || t.auto_dispatch === 'true')) continue;
+    const [okDeps] = depsSatisfied(t.deps || []);
+    if (!okDeps) continue;
+    const r = _dispatchInternal(t.id);
+    if (r.ok) released.push(t.id);
+  }
+  if (released.length) {
+    broadcastChange('change', { kind: 'auto_dispatch', task_ids: released });
+  }
+  return released;
 }
 
 export function handleDispatch(res, tid) {
-  const [p, fm, body] = findTask(tid);
-  if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'todo') return sendJson(res, 409, { error: `can dispatch only todo tasks, current: ${fm.status}` });
-  const assignee = fm.assignee || 'user';
-  if (assignee === 'user') return sendJson(res, 409, { error: 'assignee=user, not dispatchable' });
-  if (!listAgents().includes(assignee)) return sendJson(res, 409, { error: `agent '${assignee}' not registered in .claude/agents/` });
-  const [ok, open] = depsSatisfied(fm.deps || []);
-  if (!ok) return sendJson(res, 409, { error: `open deps: ${open.join(', ')}` });
-  const cycle = findDepCycle(tid);
-  if (cycle.length) return sendJson(res, 409, { error: `circular dependency: ${cycle.join(' → ')}` });
-  fm.status = 'queued';
-  saveTask(p, fm, body);
-  writeTrigger(tid, fm, p, { reason: 'dispatch' });
+  const r = _dispatchInternal(tid);
+  if (!r.ok) return sendJson(res, r.code || 500, { error: r.error });
   sendJson(res, 200, { queued: true, task_id: tid, queue_size: queueCount() });
+}
+
+// POST /api/track/:slug/iteration/:id/start
+// Bulk-dispatch every todo task in the iteration that is assigned to a real
+// agent. Tasks with open deps or other validation errors are skipped (not
+// fatal — the user can fix them and re-run). Returns per-task outcome so the
+// UI can show what was queued and what was skipped.
+export async function handleIterStart(req, res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const force = !!payload.force;
+  // Refuse a re-run unless force=true. The `started` timestamp doubles as
+  // both the run marker and the human-facing "started at" label.
+  const prevStarted = it.fm?.started || '';
+  if (prevStarted && !force) {
+    return sendJson(res, 409, {
+      error: 'iteration already started',
+      started: prevStarted,
+      hint: 'pass { "force": true } to re-dispatch (e.g. after adding new tasks)',
+    });
+  }
+  const tasks = listTasksInIteration(trackSlug, iterId);
+  const agents = listAgents();
+  const queued = [];
+  const pending = [];
+  const skipped = [];
+  for (const t of tasks) {
+    if (t.status !== 'todo') { skipped.push({ id: t.id, reason: `status=${t.status}` }); continue; }
+    if (!t.assignee || t.assignee === 'user') { skipped.push({ id: t.id, reason: 'assignee=user' }); continue; }
+    if (!agents.includes(t.assignee)) { skipped.push({ id: t.id, reason: `agent '${t.assignee}' not registered` }); continue; }
+    const cycle = findDepCycle(t.id);
+    if (cycle.length) { skipped.push({ id: t.id, reason: `circular dep: ${cycle.join(' → ')}` }); continue; }
+    const [okDeps, open] = depsSatisfied(t.deps || []);
+    if (!okDeps) {
+      // Hold for auto-dispatch — released when its deps complete.
+      const [p, fm, body] = findTask(t.id);
+      if (!p) { skipped.push({ id: t.id, reason: 'task vanished' }); continue; }
+      fm.auto_dispatch = true;
+      saveTask(p, fm, body);
+      pending.push({ id: t.id, waiting_on: open });
+      continue;
+    }
+    const r = _dispatchInternal(t.id);
+    if (r.ok) queued.push(t.id);
+    else skipped.push({ id: t.id, reason: r.error });
+  }
+  // Stamp the iteration as started so the UI can hide the button and so a
+  // subsequent call without `force` is rejected. Idempotent — re-run with
+  // force=true keeps the original timestamp as `restarted` audit trail.
+  try {
+    const readmePath = path.join(it.dir, 'README.md');
+    if (exists(readmePath)) {
+      const [fm, body] = parseTask(readText(readmePath));
+      if (fm) {
+        const now = new Date().toISOString();
+        if (!fm.started) fm.started = now;
+        else fm.restarted = now;
+        fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
+      }
+    }
+  } catch (e) { logger.warn('kanban', `mark iteration started: ${e.message}`); }
+
+  sendJson(res, 200, {
+    queued, pending, skipped, queue_size: queueCount(),
+    forced: force,
+  });
 }
 
 export function handleQueueStatus(res) {
@@ -657,8 +803,9 @@ function buildApproveBlock(attempt, summary) {
 export async function handleVerify(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
-  if (fm.status !== 'verifying' && fm.status !== 'in-progress' && fm.status !== 'queued') {
-    return sendJson(res, 409, { error: `can verify only verifying/in-progress/queued tasks, current: ${fm.status}` });
+  const verifiable = new Set(['verifying', 'in-progress', 'queued']);
+  if (!verifiable.has(fm.status)) {
+    return sendJson(res, 409, { error: `can verify only ${[...verifiable].join('/')} tasks, current: ${fm.status}` });
   }
   let payload;
   try { payload = await readBody(req); }
@@ -702,9 +849,9 @@ export async function handleVerify(req, res, tid) {
   sendJson(res, 202, { result: 'committing', task_id: tid });
 
   // Run commit/push asynchronously; persist + broadcast when done.
-  setImmediate(() => {
+  setImmediate(async () => {
     try {
-      const git = runCommitPush(p, fm, summary);
+      const git = await runCommitPush(p, fm, summary);
       // Re-read latest body in case anything else mutated it.
       const cur = findTask(tid);
       if (!cur[0]) return;
@@ -725,6 +872,7 @@ export async function handleVerify(req, res, tid) {
       curFm.status = 'done';
       saveTask(cur[0], curFm, curBody);
       broadcastChange('change', { kind: 'verify', task_id: tid, result: 'done', commit: git.commit });
+      try { releasePendingDispatch(); } catch {}
     } catch (e) {
       try {
         const cur = findTask(tid);
@@ -739,36 +887,23 @@ export async function handleVerify(req, res, tid) {
   });
 }
 
-// Resolve the set of paths that "belong" to this task at commit time.
-// Strategy: paths dirty now whose content differs from this task's claim-time
-// snapshot, minus paths claimed by other still-active tasks (their own diffs
-// against their snapshots).
-function resolveTaskPaths(tid) {
-  const snap = loadSnapshot(tid);
-  const cur = currentDirty();
-  const ours = diffAgainstSnapshot(snap, cur);
-  if (!ours.size) return [];
-
-  // Subtract paths owned by other active tasks.
-  const others = new Set();
+// Collect snapshots of this task + all other still-active tasks. Path
+// resolution against current dirty tree happens inside the worker — that way
+// it's serialised with the commit (no race against parallel commits) and the
+// main event loop never blocks on git status/hash-object.
+function collectSnapshotsForCommit(tid) {
+  const my = loadSnapshot(tid);
+  const others = [];
   for (const t of listAllTasks()) {
     if (t.id === tid) continue;
     if (t.status !== 'in-progress' && t.status !== 'verifying') continue;
     const s = loadSnapshot(t.id);
-    if (!s) continue;
-    for (const p of diffAgainstSnapshot(s, cur)) others.add(p);
+    if (s) others.push(s);
   }
-  for (const p of others) ours.delete(p);
-  return [...ours];
+  return { my, others };
 }
 
-function gitMsg(result) {
-  const raw = (result.stderr || result.stdout || '').trim();
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  return lines.pop() || '(no output)';
-}
-
-function runCommitPush(taskPath, fm, summary) {
+async function runCommitPush(taskPath, fm, summary) {
   try {
     const tid = fm.id;
     const title = fm.title || tid;
@@ -776,38 +911,73 @@ function runCommitPush(taskPath, fm, summary) {
       ? `${fm.assignee} <${fm.assignee}@workflow.local>`
       : null;
 
-    const paths = resolveTaskPaths(tid);
-    if (!paths.length) {
-      deleteSnapshot(tid);
-      return { commit: null, note: 'no changes to commit' };
+    const { my, others } = collectSnapshotsForCommit(tid);
+    // Missing snapshot: don't bail. A prior verify's "no changes" path used to
+    // delete the snapshot, leaving subsequent real verifies with nothing to
+    // compare against. Worker treats null mySnapshot as empty — claims every
+    // dirty path that isn't owned by another active task.
+    const message = `${tid}: ${title}\n\n${summary || ''}`.trim();
+    const result = await commitInWorker({
+      tid, mySnapshot: my || null, otherSnapshots: others,
+      message, author, push: true,
+    });
+    logger.info('commit', `tid=${tid} ok=${result.ok} commit=${result.commit || ''} note=${result.note || ''} err=${result.error || ''}`);
+
+    if (!result.ok && !result.commit) {
+      // Pure failure — leave snapshot in place so a retry can re-resolve paths.
+      return { error: result.error || 'commit failed' };
     }
-
-    // Stage only this task's paths. `--all -- <pathspec>` covers add/modify/delete.
-    const add = spawnSync('git', ['add', '--all', '--', ...paths], { cwd: ROOT, encoding: 'utf-8' });
-    if (add.status !== 0) return { error: `git add failed: ${gitMsg(add)}` };
-
-    const diff = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: ROOT });
-    if (diff.status === 0) {
-      deleteSnapshot(tid);
-      return { commit: null, note: 'no changes to commit' };
-    }
-
-    const msg = `${tid}: ${title}\n\n${summary || ''}`.trim();
-    const args = ['commit', '-m', msg];
-    if (author) { args.push(`--author=${author}`); }
-    const c = spawnSync('git', args, { cwd: ROOT, encoding: 'utf-8' });
-    if (c.status !== 0) return { error: `git commit failed: ${gitMsg(c)}` };
-
-    const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf-8' });
-    const commit = (sha.stdout || '').trim();
-
-    const push = spawnSync('git', ['push'], { cwd: ROOT, encoding: 'utf-8' });
-    if (push.status !== 0) return { error: `git push failed: ${gitMsg(push)}`, commit };
-
-    deleteSnapshot(tid);
-    return { commit };
+    if (result.commit) deleteSnapshot(tid);
+    // No-changes note: keep snapshot. If user later does real work and verifies
+    // again, the diff is meaningful instead of silently empty.
+    else if (result.note) return { commit: null, note: result.note };
+    // Worker may report ok:true with both `commit` and `error` (push failed).
+    return result.error
+      ? { commit: result.commit || null, error: result.error }
+      : { commit: result.commit || null };
   } catch (e) {
     return { error: String(e.message || e) };
+  }
+}
+
+// Server-side commit-and-finish for auto-verified tasks. Reuses the same
+// commit pipeline that handleVerify (manual approve) runs, but the task is
+// already approved by virtue of auto-verify passing. Always runs async so
+// the agent's MCP call doesn't block on git.
+async function commitAndFinish(tid, summary) {
+  try {
+    const cur = findTask(tid);
+    if (!cur[0]) return;
+    let curFm = cur[1];
+    let curBody = cur[2];
+
+    const git = await runCommitPush(cur[0], curFm, summary || '');
+
+    if (git.error && !git.commit) {
+      const errBlock = `### Commit failed — ${fmtDate()}\n\n${git.error}`;
+      curBody = appendToSection(curBody, 'Notes', errBlock);
+      saveTask(cur[0], curFm, curBody);
+      broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'commit_failed' });
+      return;
+    }
+    if (git.error) {
+      const warnBlock = `### Push failed — ${fmtDate()}\n\n${git.error}\n\nLocal commit ${git.commit?.slice(0, 7) || ''} is in place; push manually.`;
+      curBody = appendToSection(curBody, 'Notes', warnBlock);
+    }
+    curFm.status = 'done';
+    saveTask(cur[0], curFm, curBody);
+    broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'done', commit: git.commit });
+    try { releasePendingDispatch(); } catch {}
+  } catch (e) {
+    try {
+      const cur = findTask(tid);
+      if (cur[0]) {
+        const errBlock = `### Commit failed — ${fmtDate()}\n\n${String(e.message || e)}`;
+        const errBody = appendToSection(cur[2], 'Notes', errBlock);
+        saveTask(cur[0], cur[1], errBody);
+        broadcastChange('change', { kind: 'auto_verify', task_id: tid, result: 'commit_failed' });
+      }
+    } catch {}
   }
 }
 
@@ -823,6 +993,10 @@ export function _claimTaskInternal(tid) {
   }
   const wasInProgress = fm.status === 'in-progress';
   fm.status = 'in-progress';
+  // Stale fields from the worktree era — strip on claim so re-claims can't
+  // rehydrate dead state from old frontmatter.
+  if ('worktree_path' in fm) delete fm.worktree_path;
+  if ('worktree_branch' in fm) delete fm.worktree_branch;
   saveTask(p, fm, body);
   if (!wasInProgress && !loadSnapshot(tid)) {
     try { captureSnapshot(tid); } catch (e) { logger.error('kanban', `snapshot failed for ${tid}`, e); }
@@ -862,6 +1036,14 @@ export async function handleSubmitVerify(req, res, tid) {
       updateInstance(inst.id, { respawn_requested: true, respawn_after_submit: false });
       markExiting(inst.id, 'deferred_precompact');
     }
+  }
+  // Auto-verify tasks: server immediately approves and runs commit+push,
+  // landing the task at done without waiting for user review. Manual tasks
+  // sit at verifying until the user approves through the kanban panel.
+  const isAuto = fm.auto_verify === 'true' || fm.auto_verify === true;
+  if (isAuto) {
+    setImmediate(() => commitAndFinish(tid, summary));
+    return sendJson(res, 202, { ok: true, status: 'auto-approving', task_id: tid });
   }
   return sendJson(res, 200, { ok: true, status: fm.status });
 }
@@ -929,6 +1111,7 @@ export async function handleInstanceSpawn(req, res) {
   let payload; try { payload = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
   const agent = String(payload.agent || '').trim();
   if (!agent) return sendJson(res, 400, { error: 'agent required' });
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(agent)) return sendJson(res, 400, { error: 'agent must be kebab-case alnum' });
   if (!listAgents().includes(agent)) return sendJson(res, 404, { error: `agent '${agent}' not in .claude/agents/` });
   const inst = createInstance({ agent });
   try {
@@ -1064,6 +1247,7 @@ export async function handleNextTask(req, res) {
   const hints = callerInst ? {
     preferIteration: callerInst.last_iteration || null,
     preferTrack: callerInst.last_track || null,
+    recentFiles: Array.isArray(callerInst.recent_files) ? callerInst.recent_files : null,
   } : null;
   const trig = popNextForAssignee(assignee, instanceId, hints);
   if (!trig) {
@@ -1089,11 +1273,19 @@ export async function handleNextTask(req, res) {
     claimTaskForInstance(instanceId, trig.task_id);
     // Track iteration/track of the just-claimed task so subsequent picks
     // prefer same-iteration / same-track work and reuse the warm context.
+    // recent_files seeds affinity for the NEXT pickup — when the agent finishes
+    // this task its expected_files are files it just touched, so ranking the
+    // next trigger by overlap with those keeps related work on the same agent.
     const iter = trig.iteration || r.fm.iteration || null;
     const track = trig.track || r.fm.track || null;
-    if (iter || track) {
-      updateInstance(instanceId, { last_iteration: iter, last_track: track });
-    }
+    const expected = Array.isArray(trig.expected_files) && trig.expected_files.length
+      ? trig.expected_files
+      : (Array.isArray(r.fm.expected_files) ? r.fm.expected_files : null);
+    const patch = {};
+    if (iter) patch.last_iteration = iter;
+    if (track) patch.last_track = track;
+    if (expected && expected.length) patch.recent_files = expected;
+    if (Object.keys(patch).length) updateInstance(instanceId, patch);
   }
   return sendJson(res, 200, {
     task_id: trig.task_id,
@@ -1101,6 +1293,104 @@ export async function handleNextTask(req, res) {
     attempts: r.fm.attempts || 0,
     first_call: firstCall,
   });
+}
+
+// POST /api/task/:id/how-to-verify  body: { content: "markdown" }
+// Agent writes the user-facing checklist after auto-verify passes.
+export async function handleHowToVerify(req, res, tid) {
+  const [p, fm, body] = findTask(tid);
+  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  let payload; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const content = String(payload.content || '').trim();
+  if (!content) return sendJson(res, 400, { error: 'content required' });
+  const newBody = replaceSection(body, 'How to verify', content);
+  saveTask(p, fm, newBody);
+  return sendJson(res, 200, { ok: true });
+}
+
+// POST /api/track/:slug/iteration/:id/close-auto
+// Legacy: write CHECKLIST.md for the iteration without bulk-promoting tasks.
+// Mostly subsumed by /finalize.
+export async function handleIterCloseAuto(req, res, trackSlug, iterId) {
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const r = runCloseIteration(trackSlug, iterId, payload || {});
+  if (!r.ok) return sendJson(res, 409, { error: r.error });
+  return sendJson(res, 200, r);
+}
+
+// GET /api/track/:slug/iteration/:id/finalize-info
+// Returns the snapshot the finalize modal renders: iteration + tasks +
+// branch list + ROOT state. Read-only.
+export function handleIterFinalizeInfo(res, trackSlug, iterId) {
+  const r = getFinalizeInfo(trackSlug, iterId);
+  if (!r.ok) return sendJson(res, 404, { error: r.error });
+  return sendJson(res, 200, r);
+}
+
+// POST /api/track/:slug/iteration/:id/finalize
+// Body: { target_branch, summary?, ack_incomplete? }
+// Salvage-commit, merge auto/iter-<id> into target_branch with --no-ff,
+// generate CHECKLIST.md, mark iteration done. No git work — all per-task
+// commits already landed on the user's ROOT branch.
+export async function handleIterFinalize(req, res, trackSlug, iterId) {
+  let payload = {}; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const r = finalizeIteration(trackSlug, iterId, payload);
+  if (!r.ok) return sendJson(res, 409, r);
+
+  // Mark iteration done in its README frontmatter.
+  const iter = findIteration(trackSlug, iterId);
+  if (iter) {
+    const readmePath = path.join(iter.dir, 'README.md');
+    if (exists(readmePath)) {
+      try {
+        const [fm, body] = parseTask(readText(readmePath));
+        if (fm) {
+          fm.status = 'done';
+          fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
+        }
+      } catch (e) { logger.warn('kanban', `iter README mark-done failed: ${e.message}`); }
+    }
+  }
+  // Drop ACTIVE pointer so the track's next iteration can start cleanly.
+  try {
+    const activeFile = trackActiveFile(trackSlug);
+    if (exists(activeFile)) {
+      const cur = readText(activeFile).trim();
+      if (cur === iterId) fs.rmSync(activeFile, { force: true });
+    }
+  } catch (e) { logger.warn('kanban', `clear ACTIVE failed: ${e.message}`); }
+
+  broadcastChange('change', { kind: 'iter_finalize', iter_id: iterId, closed: r.closed || [] });
+  return sendJson(res, 200, r);
+}
+
+// GET /api/track/:slug/iteration/:id/checklist — raw CHECKLIST.md.
+export function handleIterChecklistRead(res, trackSlug, iterId) {
+  const dir = path.join(TRACKS_DIR, trackSlug, 'iterations');
+  if (!exists(dir)) return sendJson(res, 404, { error: 'track has no iterations' });
+  const match = fs.readdirSync(dir).find(n => n.startsWith(`${iterId}-`));
+  if (!match) return sendJson(res, 404, { error: 'iteration not found' });
+  const f = path.join(dir, match, 'CHECKLIST.md');
+  if (!exists(f)) return sendJson(res, 404, { error: 'no checklist — close iteration first' });
+  return sendJson(res, 200, { content: readText(f), path: rel(f) });
+}
+
+// PUT /api/track/:slug/iteration/:id/checklist  body: { content }
+// Persists the user's check-off state. The frontend posts the whole markdown.
+export async function handleIterChecklistWrite(req, res, trackSlug, iterId) {
+  const dir = path.join(TRACKS_DIR, trackSlug, 'iterations');
+  if (!exists(dir)) return sendJson(res, 404, { error: 'track has no iterations' });
+  const match = fs.readdirSync(dir).find(n => n.startsWith(`${iterId}-`));
+  if (!match) return sendJson(res, 404, { error: 'iteration not found' });
+  let payload; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const content = String(payload.content || '');
+  if (!content) return sendJson(res, 400, { error: 'content required' });
+  const f = path.join(dir, match, 'CHECKLIST.md');
+  fs.writeFileSync(f, content, 'utf-8');
+  return sendJson(res, 200, { ok: true, path: rel(f) });
 }
 
 export async function handleStatsAggregate(res) {
