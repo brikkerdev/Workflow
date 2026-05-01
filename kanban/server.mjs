@@ -6,7 +6,7 @@
 import http from 'node:http';
 import url from 'node:url';
 import fs from 'node:fs';
-import { ROOT, WORKFLOW } from './lib/config.mjs';
+import { ROOT, WORKFLOW, QUEUE_DIR, TRACKS_DIR, ARCHIVE_DIR } from './lib/config.mjs';
 import { logger } from './lib/logger.mjs';
 import { exists } from './lib/repo.mjs';
 import { sendJson, serveStatic, attachSseClient, broadcastChange } from './lib/http.mjs';
@@ -184,8 +184,22 @@ if (!exists(WORKFLOW)) {
   process.exit(1);
 }
 
+// Ensure required subdirs exist — older projects may pre-date some of these,
+// and server code assumes they're always present.
+for (const d of [QUEUE_DIR, TRACKS_DIR, ARCHIVE_DIR]) {
+  try { fs.mkdirSync(d, { recursive: true }); } catch (e) { logger.warn('kanban', `mkdir ${d} failed: ${e.message}`); }
+}
+
 logger.info('kanban', `root: ${ROOT}`);
 logger.info('kanban', `open http://${args.host}:${args.port}`);
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    logger.error('kanban', `port ${args.port} busy — pass --port <N> or stop the other instance`);
+  } else {
+    logger.error('kanban', `server error: ${e.message}`);
+  }
+  process.exit(1);
+});
 server.listen(args.port, args.host);
 startInstanceMonitor();
 startStatsPoller();

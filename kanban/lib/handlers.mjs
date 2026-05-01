@@ -25,10 +25,14 @@ import {
 } from './instances.mjs';
 import { sendJson, readBody, broadcastChange } from './http.mjs';
 import { listAttachments, saveAttachment, deleteAttachment, readAttachment } from './attachments.mjs';
-import { captureSnapshot, loadSnapshot, deleteSnapshot, currentDirty, diffAgainstSnapshot } from './snapshot.mjs';
+import { captureSnapshot, loadSnapshot, deleteSnapshot } from './snapshot.mjs';
 import { commitInWorker } from './commit_queue.mjs';
 import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
 import { logger } from './logger.mjs';
+import { isUnityProject } from './project_kind.mjs';
+
+const UNITY = isUnityProject(ROOT);
+let unityVerifyWarned = false;
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -401,6 +405,9 @@ export async function handleTaskCreate(req, res, trackSlug, iterId) {
 // view=notes  — { notes } only
 export function handleTask(res, tid, query = {}) {
   const view = query.view || 'full';
+  if (typeof tid !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*\d+$/.test(tid)) {
+    return sendJson(res, 400, { error: 'malformed task id' });
+  }
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
 
@@ -429,7 +436,10 @@ export function handleTask(res, tid, query = {}) {
     // submit and commits without waiting for the user.
     if (fm.auto_verify === 'true' || fm.auto_verify === true) out.auto_verify = true;
     if (Array.isArray(fm.expected_files) && fm.expected_files.length) out.expected_files = fm.expected_files;
-    if (fm.unity_verify === 'true' || fm.unity_verify === true) out.unity_verify = true;
+    if (fm.unity_verify === 'true' || fm.unity_verify === true) {
+      if (UNITY) out.unity_verify = true;
+      else if (!unityVerifyWarned) { logger.warn('handlers', 'unity_verify ignored — not a Unity project'); unityVerifyWarned = true; }
+    }
     return sendJson(res, 200, out);
   }
 
@@ -877,31 +887,22 @@ export async function handleVerify(req, res, tid) {
   });
 }
 
-// Resolve the set of paths that "belong" to this task at commit time.
-// Strategy: paths dirty now whose content differs from this task's claim-time
-// snapshot, minus paths claimed by other still-active tasks (their own diffs
-// against their snapshots).
-function resolveTaskPaths(tid) {
-  const snap = loadSnapshot(tid);
-  const cur = currentDirty();
-  const ours = diffAgainstSnapshot(snap, cur);
-  if (!ours.size) return [];
-
-  // Subtract paths owned by other active tasks.
-  const others = new Set();
+// Collect snapshots of this task + all other still-active tasks. Path
+// resolution against current dirty tree happens inside the worker — that way
+// it's serialised with the commit (no race against parallel commits) and the
+// main event loop never blocks on git status/hash-object.
+function collectSnapshotsForCommit(tid) {
+  const my = loadSnapshot(tid);
+  const others = [];
   for (const t of listAllTasks()) {
     if (t.id === tid) continue;
     if (t.status !== 'in-progress' && t.status !== 'verifying') continue;
     const s = loadSnapshot(t.id);
-    if (!s) continue;
-    for (const p of diffAgainstSnapshot(s, cur)) others.add(p);
+    if (s) others.push(s);
   }
-  for (const p of others) ours.delete(p);
-  return [...ours];
+  return { my, others };
 }
 
-// Resolve paths on the main thread (needs in-memory snapshot/task state),
-// then hand the actual git work to the worker so the event loop stays free.
 async function runCommitPush(taskPath, fm, summary) {
   try {
     const tid = fm.id;
@@ -910,21 +911,26 @@ async function runCommitPush(taskPath, fm, summary) {
       ? `${fm.assignee} <${fm.assignee}@workflow.local>`
       : null;
 
-    const paths = resolveTaskPaths(tid);
-    if (!paths.length) {
-      deleteSnapshot(tid);
-      return { commit: null, note: 'no changes to commit' };
-    }
-
+    const { my, others } = collectSnapshotsForCommit(tid);
+    // Missing snapshot: don't bail. A prior verify's "no changes" path used to
+    // delete the snapshot, leaving subsequent real verifies with nothing to
+    // compare against. Worker treats null mySnapshot as empty — claims every
+    // dirty path that isn't owned by another active task.
     const message = `${tid}: ${title}\n\n${summary || ''}`.trim();
-    const result = await commitInWorker({ paths, message, author, push: true });
+    const result = await commitInWorker({
+      tid, mySnapshot: my || null, otherSnapshots: others,
+      message, author, push: true,
+    });
+    logger.info('commit', `tid=${tid} ok=${result.ok} commit=${result.commit || ''} note=${result.note || ''} err=${result.error || ''}`);
 
     if (!result.ok && !result.commit) {
       // Pure failure — leave snapshot in place so a retry can re-resolve paths.
       return { error: result.error || 'commit failed' };
     }
     if (result.commit) deleteSnapshot(tid);
-    else if (result.note) { deleteSnapshot(tid); return { commit: null, note: result.note }; }
+    // No-changes note: keep snapshot. If user later does real work and verifies
+    // again, the diff is meaningful instead of silently empty.
+    else if (result.note) return { commit: null, note: result.note };
     // Worker may report ok:true with both `commit` and `error` (push failed).
     return result.error
       ? { commit: result.commit || null, error: result.error }
@@ -1105,6 +1111,7 @@ export async function handleInstanceSpawn(req, res) {
   let payload; try { payload = await readBody(req); } catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
   const agent = String(payload.agent || '').trim();
   if (!agent) return sendJson(res, 400, { error: 'agent required' });
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(agent)) return sendJson(res, 400, { error: 'agent must be kebab-case alnum' });
   if (!listAgents().includes(agent)) return sendJson(res, 404, { error: `agent '${agent}' not in .claude/agents/` });
   const inst = createInstance({ agent });
   try {

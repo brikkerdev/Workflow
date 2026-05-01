@@ -93,14 +93,11 @@ Web-канбан с drag-drop живёт в `tools/kanban/`. Запуск: `node
 
 `assignee: user` — делаешь сам.
 
-`assignee: <agent-name>` — должен соответствовать файлу в `.claude/agents/<agent-name>.md`. Текущие зарегистрированные:
+`assignee: <agent-name>` — должен соответствовать файлу в `.claude/agents/<agent-name>.md`. Базовый набор шаблонов:
 - `architect` — дизайн решений, планы
-- `developer` — Unity/C# код
-- `ugui-designer` — UGUI-сборка экранов
+- `developer` — реализация фич, рефакторинг, баг-фиксы
 - `pencil-designer` — .pen дизайн через Pencil MCP
-- `2d-artist` — спрайты, иконки, ASCII-арт
-- `animator` — DOTween-анимации
 - `sound-designer` — SFX, UI-кит
 - `game-designer` — обсуждение механик и баланса
 
-Добавить нового агента: создать `.claude/agents/<name>.md` с frontmatter (`name`, `description`, `model`, `color`, `memory`).
+Добавить нового агента: создать `.claude/agents/<name>.md` с frontmatter (`name`, `description`, `model`, `color`, `memory`). Глобальные агенты — `~/.workflow/agents/`, перекрывают bundled.

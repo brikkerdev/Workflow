@@ -153,6 +153,10 @@ function buildKanbanInto(container, tasks, opts = {}) {
       const id = e.dataTransfer.getData('text/plain');
       if (!id) return;
       const t = STATE.taskIndex[id];
+      if (!t) {
+        showDragReason(`${id}: unknown — refresh`, e.clientX, e.clientY);
+        return;
+      }
       // Pending is auto-managed (set by handleIterStart on todo+open-deps).
       // Manual drops into it would be confusing — refuse.
       if (col.key === 'pending') {
@@ -370,6 +374,7 @@ function buildBoardHeader(iter) {
 
 async function startBoardIteration(track, iterId, force = false) {
   if (!track) { toast('no track context — open a specific track to start its iteration', 'error'); return; }
+  if (!iterId) { toast('no iteration selected', 'error'); return; }
   if (!await confirmModal({
     title: force ? 'Re-dispatch iteration' : 'Start iteration',
     message: force

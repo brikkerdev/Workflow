@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { QUEUE_DIR } from './config.mjs';
 import { exists, readText, rel } from './repo.mjs';
+import { logger } from './logger.mjs';
 
 export function queueCount() {
   if (!exists(QUEUE_DIR)) return 0;
@@ -13,7 +14,8 @@ export function queueItems() {
   const out = [];
   for (const n of fs.readdirSync(QUEUE_DIR).sort()) {
     if (!n.endsWith('.json')) continue;
-    try { out.push(JSON.parse(readText(path.join(QUEUE_DIR, n)))); } catch {}
+    try { out.push(JSON.parse(readText(path.join(QUEUE_DIR, n)))); }
+    catch (e) { logger.warn('queue', `malformed trigger ${n}: ${e.message}`); }
   }
   return out;
 }
@@ -103,7 +105,8 @@ function rankCandidates(assignee, hints) {
   for (let i = 0; i < names.length; i++) {
     const n = names[i];
     let trig;
-    try { trig = JSON.parse(readText(path.join(QUEUE_DIR, n))); } catch { continue; }
+    try { trig = JSON.parse(readText(path.join(QUEUE_DIR, n))); }
+    catch (e) { logger.warn('queue', `malformed trigger ${n}: ${e.message}`); continue; }
     if (assignee && trig.assignee !== assignee) continue;
     if (intersectsClaimed(trig.expected_files)) continue; // file lock
     out.push({ name: n, trig, score: affinityScore(trig, hints), order: i });

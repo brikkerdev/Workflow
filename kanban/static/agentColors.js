@@ -4,14 +4,11 @@
 // User stripe follows the theme: white on dark, black on light. Resolved at
 // call time via the special token 'theme-fg'.
 const FIXED = {
-  '2d-artist':       '#FF7A45', // bright orange
-  'animator':        '#C77DFF', // vivid violet
   'architect':       '#3B9EFF', // electric blue
   'developer':       '#22E0B8', // bright teal
   'game-designer':   '#FFB020', // saturated gold
   'pencil-designer': '#FF4F9E', // hot pink
   'sound-designer':  '#3DDC84', // bright green
-  'ugui-designer':   '#5B7CFF', // vivid indigo
   'user':            'theme-fg',
 };
 

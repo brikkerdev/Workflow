@@ -12,11 +12,13 @@
 // because the kanban already knows its own ROOT).
 
 import path from 'node:path';
+import { isUnityProject } from '../lib/project_kind.mjs';
 
 const KANBAN = (process.env.WORKFLOW_KANBAN || 'http://127.0.0.1:7777').replace(/\/$/, '');
 const ROOT = path.resolve(process.env.WORKFLOW_PROJECT || process.cwd());
 const INSTANCE_ID = process.env.WORKFLOW_INSTANCE_ID || null;
 const AGENT = process.env.WORKFLOW_AGENT || null;
+const UNITY = isUnityProject(ROOT);
 
 // ---------- stdio JSON-RPC framing ----------
 let stdinBuf = '';
@@ -191,34 +193,6 @@ const tools = [
     }),
   },
   {
-    name: 'workflow_unity_log_mark',
-    description: 'Snapshot the current Unity Editor.log offset. Save the result and pass it to workflow_unity_log_since after running an action so you only see lines your action produced (not other agents).',
-    inputSchema: { type: 'object', properties: {} },
-    handler: async () => {
-      const { logMark } = await import('../lib/unity_log.mjs');
-      return logMark();
-    },
-  },
-  {
-    name: 'workflow_unity_log_since',
-    description: 'Read Unity Editor.log lines appended since a prior mark. Optional grep regex filter. Returns { lines, errors, warnings }.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        mark: { type: 'object', description: 'Result of workflow_unity_log_mark' },
-        grep: { type: 'string', description: 'Optional regex (case-insensitive) to filter lines' },
-        limit: { type: 'integer', minimum: 1, default: 200 },
-      },
-      required: ['mark'],
-    },
-    handler: async ({ mark, grep, limit = 200 }) => {
-      const { readLogSince, classifyLines } = await import('../lib/unity_log.mjs');
-      const lines = readLogSince(mark, { grep, limit });
-      const cls = classifyLines(lines);
-      return { lines, errors: cls.errors, warnings: cls.warnings };
-    },
-  },
-  {
     name: 'workflow_set_how_to_verify',
     description: 'Replace the "How to verify" section of the task with a user-facing checklist. Call this AFTER auto-verify passes — the user reads this to manually validate runtime behavior.',
     inputSchema: {
@@ -258,6 +232,39 @@ const tools = [
     },
   },
 ];
+
+if (UNITY) {
+  tools.push(
+    {
+      name: 'workflow_unity_log_mark',
+      description: 'Snapshot the current Unity Editor.log offset. Save the result and pass it to workflow_unity_log_since after running an action so you only see lines your action produced (not other agents).',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => {
+        const { logMark } = await import('../lib/unity_log.mjs');
+        return logMark();
+      },
+    },
+    {
+      name: 'workflow_unity_log_since',
+      description: 'Read Unity Editor.log lines appended since a prior mark. Optional grep regex filter. Returns { lines, errors, warnings }.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mark: { type: 'object', description: 'Result of workflow_unity_log_mark' },
+          grep: { type: 'string', description: 'Optional regex (case-insensitive) to filter lines' },
+          limit: { type: 'integer', minimum: 1, default: 200 },
+        },
+        required: ['mark'],
+      },
+      handler: async ({ mark, grep, limit = 200 }) => {
+        const { readLogSince, classifyLines } = await import('../lib/unity_log.mjs');
+        const lines = readLogSince(mark, { grep, limit });
+        const cls = classifyLines(lines);
+        return { lines, errors: cls.errors, warnings: cls.warnings };
+      },
+    },
+  );
+}
 
 // ---------- JSON-RPC dispatch ----------
 async function handle(msg) {
@@ -304,7 +311,7 @@ async function handle(msg) {
   }
 }
 
-log(`up · kanban=${KANBAN} · root=${ROOT}`);
+log(`up · kanban=${KANBAN} · root=${ROOT}${UNITY ? ' · unity' : ''}`);
 
 // Bind the real claude.exe PID to this instance. The MCP server is spawned
 // directly by claude (`.mcp.json` runs `node <path>`), so process.ppid is the

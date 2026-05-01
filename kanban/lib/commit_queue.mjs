@@ -16,31 +16,54 @@ const WORKER_SCRIPT = path.join(__dirname, 'commit_worker.mjs');
 
 let worker = null;
 let nextId = 1;
+// id → { resolve, job, attempts }
 const pending = new Map();
 
-function rejectAllPending(reason) {
-  for (const [, cb] of pending) cb({ ok: false, error: reason });
+function handleWorkerLoss(reason) {
+  // Retry each in-flight job once with a fresh worker; reject if already retried.
+  const survivors = [];
+  for (const [, entry] of pending) {
+    if (entry.attempts >= 2) {
+      logger.error('commit-queue', `dropping job ${entry.job.tid || '?'} after retry: ${reason}`);
+      entry.resolve({ ok: false, error: `commit worker lost twice: ${reason}` });
+    } else {
+      survivors.push(entry);
+    }
+  }
   pending.clear();
+  if (!survivors.length) return;
+  logger.warn('commit-queue', `worker lost (${reason}); retrying ${survivors.length} in-flight job(s)`);
+  const w = ensureWorker();
+  for (const entry of survivors) {
+    const id = nextId++;
+    entry.attempts += 1;
+    pending.set(id, entry);
+    try { w.postMessage({ ...entry.job, id }); }
+    catch (e) {
+      pending.delete(id);
+      entry.resolve({ ok: false, error: String(e.message || e) });
+    }
+  }
 }
 
 function ensureWorker() {
   if (worker) return worker;
   worker = new Worker(WORKER_SCRIPT, { workerData: { root: ROOT } });
   worker.on('message', (m) => {
-    const cb = pending.get(m.id);
-    if (!cb) return;
+    const entry = pending.get(m.id);
+    if (!entry) return;
     pending.delete(m.id);
-    cb(m);
+    entry.resolve(m);
   });
   worker.on('error', (e) => {
     logger.error('commit-worker', String(e.message || e));
-    rejectAllPending(`commit worker error: ${String(e.message || e)}`);
     worker = null;
+    handleWorkerLoss(`error: ${String(e.message || e)}`);
   });
   worker.on('exit', (code) => {
     if (code !== 0) logger.error('commit-worker', `exited with code ${code}`);
-    rejectAllPending(`commit worker exited (code ${code})`);
     worker = null;
+    handleWorkerLoss(`exit code ${code}`);
   });
   return worker;
 }
@@ -49,7 +72,8 @@ export function commitInWorker(job) {
   const w = ensureWorker();
   return new Promise((resolve) => {
     const id = nextId++;
-    pending.set(id, resolve);
+    const entry = { resolve, job, attempts: 1 };
+    pending.set(id, entry);
     try { w.postMessage({ ...job, id }); }
     catch (e) {
       pending.delete(id);

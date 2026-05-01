@@ -25,7 +25,7 @@ MCP-инструмент `workflow_next_task` сам подставит assignee
    - Иначе — таска зависает в `verifying`, юзер approve/reject вручную, сервер коммитит при approve.
 8. Заверши турн. Stop hook сразу скажет: следующая задача (`block` с reason "Take next workflow task: T...") или выход.
 
-Если в проекте открыт Unity и тебе нужны его данные — используй `workflow_unity_log_mark()` → действие → `workflow_unity_log_since(mark, grep?)` чтобы получить только свои строки из общего Editor.log.
+Если проект предоставляет MCP-инструменты для runtime-проверок (например `workflow_unity_log_mark/since` в Unity-проектах) — используй их между правками: snapshot → действие → diff. Если таких инструментов нет, опирайся на lint/typecheck/build/test.
 
 ## Запреты
 

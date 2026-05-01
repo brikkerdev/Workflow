@@ -131,6 +131,7 @@ export function finalizeIteration(trackSlug, iterId, opts = {}) {
   }
 
   const checklist = buildChecklist({ trackSlug, iterId, tasks });
+  fs.mkdirSync(iter.dir, { recursive: true });
   fs.writeFileSync(path.join(iter.dir, 'CHECKLIST.md'), checklist, 'utf-8');
 
   return {
@@ -147,6 +148,7 @@ export function closeIteration(trackSlug, iterId, opts = {}) {
   const tasks = listTasksInIteration(trackSlug, iterId);
   const checklist = buildChecklist({ trackSlug, iterId, tasks });
   const checklistPath = path.join(iter.dir, 'CHECKLIST.md');
+  fs.mkdirSync(iter.dir, { recursive: true });
   fs.writeFileSync(checklistPath, checklist, 'utf-8');
   return {
     ok: true,

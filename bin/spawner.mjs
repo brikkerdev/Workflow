@@ -33,14 +33,11 @@ function findOnPath(name) {
 
 // Mirror of kanban/static/agentColors.js — keep in sync.
 const AGENT_COLORS = {
-  '2d-artist':       '#FF7A45',
-  'animator':        '#C77DFF',
   'architect':       '#3B9EFF',
   'developer':       '#22E0B8',
   'game-designer':   '#FFB020',
   'pencil-designer': '#FF4F9E',
   'sound-designer':  '#3DDC84',
-  'ugui-designer':   '#5B7CFF',
 };
 function hashHue(s) {
   let h = 0;
