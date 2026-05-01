@@ -32,15 +32,23 @@ function transcriptMtime(sessionId) {
 
 const TICK_MS = 5000;
 
-async function spawnFresh(agent) {
+// hints: optional { last_iteration, last_track, recent_files } copied from the
+// dying instance so the fresh one biases its first task pickup toward warm
+// context (same iteration → same goal/plan; same files → reuse cached reads).
+// Without this, every cold respawn picks FIFO and busts the prompt cache.
+async function spawnFresh(agent, hints = null) {
   try {
     const { spawnInstance } = await import('../../bin/spawner.mjs');
     const { createInstance, updateInstance: upd } = await import('./instances.mjs');
     const { getAgentModel } = await import('./repo.mjs');
     const inst = createInstance({ agent });
     const model = getAgentModel(agent);
+    const seed = {};
+    if (hints?.last_iteration) seed.last_iteration = hints.last_iteration;
+    if (hints?.last_track) seed.last_track = hints.last_track;
+    if (Array.isArray(hints?.recent_files) && hints.recent_files.length) seed.recent_files = hints.recent_files;
     const { terminalPid } = await spawnInstance({ agent, instanceId: inst.id, project: ROOT, model });
-    upd(inst.id, { terminal_pid: terminalPid, model: model || null });
+    upd(inst.id, { terminal_pid: terminalPid, model: model || null, ...seed });
     broadcastChange('instances', { kind: 'respawn', instance_id: inst.id, agent });
     return inst.id;
   } catch (e) {
@@ -104,8 +112,9 @@ async function tick() {
         preferTrack: inst.last_track || null,
       })) {
         logger.info('monitor', `respawning idle ${inst.agent} (instance ${inst.id}) — queue has work`);
+        const hints = { last_iteration: inst.last_iteration, last_track: inst.last_track, recent_files: inst.recent_files };
         removeInstance(inst.id);
-        await spawnFresh(inst.agent);
+        await spawnFresh(inst.agent, hints);
       }
       continue;
     }
@@ -159,8 +168,9 @@ async function tick() {
     markDead(inst.id, inst.exit_reason || 'pid_gone');
     broadcastChange('instances', { kind: 'dead', instance_id: inst.id });
     if (wantsRespawn) {
+      const hints = { last_iteration: inst.last_iteration, last_track: inst.last_track, recent_files: inst.recent_files };
       removeInstance(inst.id);
-      await spawnFresh(inst.agent);
+      await spawnFresh(inst.agent, hints);
     } else {
       const sinceDead = Date.now() - new Date(inst.last_seen || inst.started_at || 0).getTime();
       if (sinceDead > 60_000) removeInstance(inst.id);

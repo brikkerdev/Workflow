@@ -76,26 +76,83 @@ async function resolveTaskId(transcriptPath) {
   return findTaskIdInTranscript(fs.readFileSync(transcriptPath, 'utf-8'));
 }
 
-function sumUsage(transcriptPath, tid) {
-  if (!tid) return null;
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
-  const text = fs.readFileSync(transcriptPath, 'utf-8');
+function emptyTotals() { return { input: 0, output: 0, cache_read: 0, cache_creation: 0, messages: 0 }; }
 
-  const totals = { input: 0, output: 0, cache_read: 0, cache_creation: 0, messages: 0 };
+function partContent(part) {
+  if (typeof part?.content === 'string') return part.content;
+  if (Array.isArray(part?.content)) return part.content.map(c => c?.text || '').join('');
+  return '';
+}
+
+// Walk the transcript and split usage into per-task segments. The agent-loop
+// completes many tasks in one Claude session, so we must attribute each
+// turn's tokens to whichever task was active at the moment — not lump it
+// all onto the last claimed task (the bug in the previous implementation).
+//
+// State machine:
+//   - tool_result containing { "task_id": "T###" } → currentTid := T###
+//   - assistant turn with usage → accumulate into segments[currentTid]
+//   - tool_use mcp__workflow__workflow_submit_for_verify(task_id=X)
+//     → close segment for X (currentTid stays; next claim will switch)
+// If no tid is active (e.g. before first claim), tokens are dropped on the
+// floor — they belong to bootstrap, not to any task.
+function segmentUsage(transcriptPath, fallbackTid) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
+  const text = fs.readFileSync(transcriptPath, 'utf-8');
+  const segments = new Map();
+  let currentTid = null;
+  function ensure(tid) {
+    if (!segments.has(tid)) segments.set(tid, emptyTotals());
+    return segments.get(tid);
+  }
   for (const line of text.split('\n')) {
     if (!line) continue;
-    let row;
-    try { row = JSON.parse(line); } catch { continue; }
-    // Shape varies across Claude Code transcript versions; try a few.
-    const usage = row?.message?.usage || row?.usage;
-    if (!usage) continue;
-    totals.input += Number(usage.input_tokens || 0);
-    totals.output += Number(usage.output_tokens || 0);
-    totals.cache_read += Number(usage.cache_read_input_tokens || 0);
-    totals.cache_creation += Number(usage.cache_creation_input_tokens || 0);
-    totals.messages += 1;
+    let row; try { row = JSON.parse(line); } catch { continue; }
+    const content = row?.message?.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === 'tool_result') {
+          const txt = partContent(part);
+          const m = /"task_id"\s*:\s*"(T\d+)"/.exec(txt);
+          if (m) currentTid = m[1];
+        }
+        if (part?.type === 'tool_use' && part.name && part.name.endsWith('workflow_submit_for_verify')) {
+          // submit closes its task; next claim/next_task will set a new tid.
+          // Don't clear currentTid yet — the assistant's submit-turn usage
+          // belongs to the submitted task. Clear lazily when a new tid arrives.
+        }
+      }
+    }
+    if (row.type === 'assistant') {
+      const usage = row?.message?.usage;
+      if (usage && currentTid) {
+        const t = ensure(currentTid);
+        t.input += Number(usage.input_tokens || 0);
+        t.output += Number(usage.output_tokens || 0);
+        t.cache_read += Number(usage.cache_read_input_tokens || 0);
+        t.cache_creation += Number(usage.cache_creation_input_tokens || 0);
+        t.messages += 1;
+      }
+    }
   }
-  return { tid, totals };
+  // Fallback: if we never saw a claim/next_task tool_result (legacy session),
+  // attribute everything to fallbackTid so we don't lose data.
+  if (!segments.size && fallbackTid) {
+    const totals = emptyTotals();
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      let row; try { row = JSON.parse(line); } catch { continue; }
+      if (row.type !== 'assistant') continue;
+      const u = row?.message?.usage; if (!u) continue;
+      totals.input += Number(u.input_tokens || 0);
+      totals.output += Number(u.output_tokens || 0);
+      totals.cache_read += Number(u.cache_read_input_tokens || 0);
+      totals.cache_creation += Number(u.cache_creation_input_tokens || 0);
+      totals.messages += 1;
+    }
+    segments.set(fallbackTid, totals);
+  }
+  return [...segments.entries()].map(([tid, totals]) => ({ tid, totals }));
 }
 
 function postStats(taskId, sessionId, totals) {
@@ -129,12 +186,16 @@ function postJSON(path, payload) {
   });
 }
 
-// Thresholds per Anthropic per-turn windows. When current session usage
-// exceeds the limit, mark the instance for clean respawn.
-// Sonnet's 200k context (or Opus 1M) gives plenty of room. We respawn near
-// the high-water mark, not at half, so cold-restart waste is rare. Override
-// via WORKFLOW_RESPAWN_AT.
-const RESPAWN_THRESHOLD = parseInt(process.env.WORKFLOW_RESPAWN_AT || '220000', 10);
+// Per-model respawn threshold. Sonnet sits at ~200k usable context, Opus at
+// ~1M. We trigger respawn before natural compaction kicks in so the cold
+// restart preserves affinity (last_iteration/recent_files) instead of dying
+// mid-turn. Override via WORKFLOW_RESPAWN_AT.
+function thresholdForModel(model) {
+  if (process.env.WORKFLOW_RESPAWN_AT) return parseInt(process.env.WORKFLOW_RESPAWN_AT, 10);
+  const m = String(model || '').toLowerCase();
+  if (m.includes('opus')) return 800_000;
+  return 180_000; // sonnet, haiku, unknown
+}
 
 async function main() {
   const raw = await readStdin();
@@ -143,26 +204,31 @@ async function main() {
   try { payload = JSON.parse(raw); } catch (e) { log('bad json:', e.message); process.exit(0); }
 
   log(`fired transcript=${payload.transcript_path || '?'} session=${payload.session_id || '?'}`);
-  const tid = await resolveTaskId(payload.transcript_path);
-  if (!tid) { log('no task id found (instance lookup + transcript)'); process.exit(0); }
-  const result = sumUsage(payload.transcript_path, tid);
-  if (!result) { log(`tid=${tid} but transcript empty`); process.exit(0); }
-  log(`tid=${result.tid} totals=`, JSON.stringify(result.totals));
+  const fallbackTid = await resolveTaskId(payload.transcript_path);
+  const segments = segmentUsage(payload.transcript_path, fallbackTid);
+  if (!segments.length) { log('no task segments found in transcript'); process.exit(0); }
   const sessionId = payload.session_id || 'unknown';
-  const code = await postStats(result.tid, sessionId, result.totals);
-  log(`POST status=${code}`);
+  let totalTokensThisSession = 0;
+  for (const seg of segments) {
+    log(`seg tid=${seg.tid} totals=${JSON.stringify(seg.totals)}`);
+    // Compose key per (session, task) so each task's slice replaces cleanly
+    // on subsequent Stop firings within the same session.
+    const code = await postStats(seg.tid, `${sessionId}:${seg.tid}`, seg.totals);
+    log(`POST tid=${seg.tid} status=${code}`);
+    totalTokensThisSession += (seg.totals.input || 0) + (seg.totals.output || 0);
+  }
 
-  // If running inside a spawned instance, post a heartbeat with token usage
-  // and request respawn if we crossed the threshold.
+  // If running inside a spawned instance, heartbeat + maybe request respawn.
   const instanceId = process.env.WORKFLOW_INSTANCE_ID;
   if (instanceId) {
-    const used = (result.totals.input || 0) + (result.totals.output || 0);
+    const inst = await getJSON(`/api/instance/${encodeURIComponent(instanceId)}`);
+    const threshold = thresholdForModel(inst?.model);
     await postJSON(`/api/instance/${encodeURIComponent(instanceId)}/heartbeat`, {
-      tokens_used: used,
+      tokens_used: totalTokensThisSession,
       session_id: sessionId,
     });
-    if (used > RESPAWN_THRESHOLD) {
-      log(`tokens=${used} > ${RESPAWN_THRESHOLD} — requesting respawn`);
+    if (totalTokensThisSession > threshold) {
+      log(`tokens=${totalTokensThisSession} > ${threshold} (model=${inst?.model || 'unknown'}) — requesting respawn`);
       await postJSON(`/api/instance/${encodeURIComponent(instanceId)}/respawn`, {});
     }
   }
