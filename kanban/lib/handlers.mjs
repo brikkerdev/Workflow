@@ -1386,6 +1386,172 @@ export function handleIterChecklistRead(res, trackSlug, iterId) {
   return sendJson(res, 200, { content: readText(f), path: rel(f) });
 }
 
+// ----- Orchestrator endpoints --------------------------------------------
+// These power /iterate. The orchestrator owns the iteration end-to-end and
+// drives the kanban as a viewer; no claim/in-progress/verifying — just
+// `todo → done` with a per-task commit.
+
+// GET /api/iteration/load[?track=&id=]
+// Returns iteration metadata + every task's full body unpacked, plus a
+// dependency graph. One call replaces glob+read-each-task in the orchestrator
+// session.
+export function handleIterationLoad(res, query) {
+  let track = query && query.track;
+  let iterId = query && query.id;
+  let iter = null;
+  if (track && iterId) {
+    iter = findIteration(track, iterId);
+  } else if (track && !iterId) {
+    const aid = trackActive(track);
+    if (aid) iter = findIteration(track, aid);
+  } else {
+    const actives = activeIterations();
+    if (actives.length === 1) iter = actives[0];
+    else if (actives.length > 1) {
+      return sendJson(res, 409, {
+        error: 'multiple active iterations — pass ?track= and ?id=',
+        actives: actives.map(it => ({ track: it.track, id: it.id, slug: it.slug, title: it.fm.title || '' })),
+      });
+    }
+  }
+  if (!iter) return sendJson(res, 404, { error: 'iteration not found (or no active iteration)' });
+
+  const tasksRaw = listTasksInIteration(iter.track, iter.id);
+  const tasks = tasksRaw.map(t => ({
+    id: t.id,
+    title: t.title || '',
+    status: t.status || 'todo',
+    deps: Array.isArray(t.deps) ? t.deps : [],
+    expected_files: Array.isArray(t.expected_files) ? t.expected_files : [],
+    estimate: t.estimate || '',
+    assignee: t.assignee || '',
+    auto_verify: t.auto_verify === 'true' || t.auto_verify === true,
+    goal: t._goal || '',
+    context: t._context || '',
+    acceptance: t._acceptance || '',
+    criteria: t._criteria || [],
+    how_to_verify: t._verify || '',
+    subtasks: t._subtasks || [],
+    notes: t._notes || '',
+    path: t._path || '',
+  }));
+
+  // Reverse dep graph: id → list of ids it depends on (only edges into other tasks in this iter).
+  const ids = new Set(tasks.map(t => t.id));
+  const dep_graph = {};
+  for (const t of tasks) {
+    const filtered = (t.deps || []).filter(d => ids.has(d));
+    if (filtered.length) dep_graph[t.id] = filtered;
+  }
+
+  return sendJson(res, 200, {
+    iteration: {
+      track: iter.track,
+      id: iter.id,
+      slug: iter.slug,
+      status: iter.fm.status || iter.status || 'planned',
+      title: iter.fm.title || '',
+      goal: extractSection(iter.body || '', 'Цель') || extractSection(iter.body || '', 'Goal'),
+      scope: extractSection(iter.body || '', 'Scope'),
+      exit_criteria: extractSection(iter.body || '', 'Exit criteria'),
+      notes: extractSection(iter.body || '', 'Заметки') || extractSection(iter.body || '', 'Notes'),
+      path: rel(path.join(iter.dir, 'README.md')),
+    },
+    tasks,
+    dep_graph,
+  });
+}
+
+// POST /api/task/:id/complete  body: { summary?, files?, author? }
+// Atomic close: commit the task's files, append summary to Notes, set
+// status=done. Bypasses kanban's todo→done transition guard because the
+// orchestrator owns the lifecycle here.
+export async function handleOrchTaskComplete(req, res, tid) {
+  const [p, fm, body] = findTask(tid);
+  if (!p) return sendJson(res, 404, { error: 'task not found' });
+  let payload = {};
+  try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+
+  const summary = String(payload.summary || '').trim();
+  let files = Array.isArray(payload.files) ? payload.files.slice() : null;
+  if (!files || !files.length) {
+    files = Array.isArray(fm.expected_files) ? fm.expected_files.slice() : [];
+  }
+  // Always include the task file itself so the status flip is part of the commit.
+  if (!files.includes(p)) files.push(p);
+
+  let updatedBody = body;
+  if (summary) {
+    const block = `### Done — ${fmtDate()}\n\n${summary}`;
+    updatedBody = appendToSection(body, 'Notes', block);
+  }
+  fm.status = 'done';
+  saveTask(p, fm, updatedBody);
+
+  const author = payload.author || 'orchestrator <orchestrator@workflow.local>';
+  const title = fm.title || tid;
+  const message = `${tid}: ${title}\n\n${summary}`.trim();
+
+  // Use commit_worker in legacy mode: explicit paths.
+  let git = { commit: null, note: null, error: null };
+  try {
+    const result = await commitInWorker({
+      paths: files, message, author, push: false,
+    });
+    if (result.ok) {
+      git.commit = result.commit || null;
+      git.note = result.note || null;
+      if (result.error) git.error = result.error; // e.g. push failed (we don't push here, but keep for safety)
+    } else {
+      git.error = result.error || 'commit failed';
+    }
+  } catch (e) {
+    git.error = String(e.message || e);
+  }
+
+  broadcastChange('change', { kind: 'orch_complete', task_id: tid, commit: git.commit });
+  return sendJson(res, 200, { ok: !git.error, task_id: tid, status: 'done', ...git });
+}
+
+// POST /api/iteration/close  body: { track, id, status: 'done'|'abandoned' }
+// Light close: rewrites iteration README frontmatter and clears the track's
+// ACTIVE pointer if it points at this iteration. No git work — orchestrator
+// already committed per-task.
+export async function handleIterationClose(req, res) {
+  let payload = {};
+  try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const track = String(payload.track || '').trim();
+  const iterId = String(payload.id || '').trim();
+  const status = String(payload.status || 'done').trim();
+  if (!track || !iterId) return sendJson(res, 400, { error: 'track and id required' });
+  if (status !== 'done' && status !== 'abandoned') {
+    return sendJson(res, 400, { error: 'status must be done or abandoned' });
+  }
+  const iter = findIteration(track, iterId);
+  if (!iter) return sendJson(res, 404, { error: 'iteration not found' });
+
+  const readmePath = path.join(iter.dir, 'README.md');
+  if (exists(readmePath)) {
+    const [fm, body] = parseTask(readText(readmePath));
+    if (fm) {
+      fm.status = status;
+      fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
+    }
+  }
+  try {
+    const activeFile = trackActiveFile(track);
+    if (exists(activeFile)) {
+      const cur = readText(activeFile).trim();
+      if (cur === iterId) fs.rmSync(activeFile, { force: true });
+    }
+  } catch {}
+
+  broadcastChange('change', { kind: 'orch_iter_close', track, id: iterId, status });
+  return sendJson(res, 200, { ok: true, track, id: iterId, status });
+}
+
 // PUT /api/track/:slug/iteration/:id/checklist  body: { content }
 // Persists the user's check-off state. The frontend posts the whole markdown.
 export async function handleIterChecklistWrite(req, res, trackSlug, iterId) {

@@ -23,6 +23,7 @@ import {
   handleHowToVerify,
   handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
   handleIterFinalizeInfo, handleIterFinalize,
+  handleIterationLoad, handleOrchTaskComplete, handleIterationClose,
   handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
   handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
   handleAgentLoopDecide, handleNextTask,
@@ -63,6 +64,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/agents') return handleAgentsList(res);
       if (p === '/api/stats') return handleStatsAggregate(res);
       if (p === '/api/instances') return handleInstancesList(res);
+      if (p === '/api/iteration/load') return handleIterationLoad(res, u.query);
 
       let m;
       m = /^\/api\/instance\/([^/]+)$/.exec(p);
@@ -84,7 +86,7 @@ const server = http.createServer(async (req, res) => {
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
       // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|how-to-verify)$/.exec(p);
+      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|how-to-verify|complete)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
         if (action === 'dispatch') return handleDispatch(res, tid);
@@ -95,7 +97,11 @@ const server = http.createServer(async (req, res) => {
         if (action === 'subtasks') return handleSubtasks(req, res, tid);
         if (action === 'stats') return handleRecordStats(req, res, tid);
         if (action === 'how-to-verify') return handleHowToVerify(req, res, tid);
+        if (action === 'complete') return handleOrchTaskComplete(req, res, tid);
       }
+
+      // orchestrator
+      if (p === '/api/iteration/close') return handleIterationClose(req, res);
 
       // tracks
       if (p === '/api/tracks') return handleTrackCreate(req, res);

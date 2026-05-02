@@ -233,6 +233,62 @@ const tools = [
   },
 ];
 
+// ---------- Orchestrator tools ----------
+// /iterate-mode: one Claude session owns the iteration end-to-end. These three
+// tools cover the hot path so the orchestrator never has to glob/Read/Edit
+// task files or run git itself.
+tools.push(
+  {
+    name: 'workflow_iteration_load',
+    description: 'Load the active iteration (or a specific track+id) with every task unpacked and a dependency graph. One call replaces glob+read of README and every T###-*.md. Use at the start of /iterate.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        track: { type: 'string', description: 'Track slug (optional — auto-detect if omitted).' },
+        id: { type: 'string', description: 'Iteration id like "001" (optional).' },
+      },
+    },
+    handler: async ({ track, id }) => {
+      const qs = [];
+      if (track) qs.push(`track=${encodeURIComponent(track)}`);
+      if (id) qs.push(`id=${encodeURIComponent(id)}`);
+      const path = '/api/iteration/load' + (qs.length ? `?${qs.join('&')}` : '');
+      return api('GET', path);
+    },
+  },
+  {
+    name: 'workflow_task_complete',
+    description: 'Atomically: commit the task\'s files, append summary to Notes, set status=done. Use after a sub-agent (or you) finished a task in /iterate. Replaces manual git add/commit + frontmatter edit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        summary: { type: 'string', description: '1-3 lines on what was done; appended to Notes and used as the commit body.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Files to commit (defaults to task.expected_files). The task .md itself is added automatically.' },
+        author: { type: 'string', description: 'Override commit author. Defaults to "orchestrator <orchestrator@workflow.local>".' },
+      },
+      required: ['task_id'],
+    },
+    handler: async ({ task_id, summary, files, author }) =>
+      api('POST', `/api/task/${encodeURIComponent(task_id)}/complete`, { summary, files, author }),
+  },
+  {
+    name: 'workflow_iteration_close',
+    description: 'Mark iteration done (or abandoned) and clear the track\'s ACTIVE pointer. No git work — per-task commits already landed via workflow_task_complete.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        track: { type: 'string' },
+        id: { type: 'string' },
+        status: { type: 'string', enum: ['done', 'abandoned'], default: 'done' },
+      },
+      required: ['track', 'id'],
+    },
+    handler: async ({ track, id, status }) =>
+      api('POST', '/api/iteration/close', { track, id, status: status || 'done' }),
+  },
+);
+
 if (UNITY) {
   tools.push(
     {

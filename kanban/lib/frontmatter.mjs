@@ -6,13 +6,33 @@ export function parseTask(text) {
   const fmBlock = m[1];
   const body = m[2];
   const fm = {};
-  for (const rawLine of fmBlock.split('\n')) {
-    const line = rawLine.replace(/\s+$/, '');
+  const lines = fmBlock.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, '');
     if (!line || !line.includes(':')) continue;
+    if (/^\s/.test(line)) continue; // continuation of a block list, handled below
     const idx = line.indexOf(':');
     const k = line.slice(0, idx).trim();
     const v = line.slice(idx + 1).trim();
-    if (v.startsWith('[') && v.endsWith(']')) {
+    if (v === '') {
+      // Possible block-style list:
+      //   key:
+      //     - item
+      //     - item
+      const items = [];
+      let j = i + 1;
+      while (j < lines.length) {
+        const next = lines[j];
+        const trimmed = next.trim();
+        if (!trimmed) { j++; continue; }
+        if (!/^\s/.test(next)) break; // un-indented → next key
+        if (!trimmed.startsWith('- ')) break;
+        items.push(trimmed.slice(2).trim());
+        j++;
+      }
+      if (items.length) { fm[k] = items; i = j - 1; }
+      else fm[k] = '';
+    } else if (v.startsWith('[') && v.endsWith(']')) {
       const inner = v.slice(1, -1).trim();
       fm[k] = inner ? inner.split(',').map(s => s.trim()).filter(Boolean) : [];
     } else if (v.startsWith('"') && v.endsWith('"')) {
