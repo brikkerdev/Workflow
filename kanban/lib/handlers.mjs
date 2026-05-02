@@ -33,6 +33,7 @@ import { isUnityProject } from './project_kind.mjs';
 
 const UNITY = isUnityProject(ROOT);
 let unityVerifyWarned = false;
+const STARTED_AT = new Date();
 
 function projectName() {
   const f = path.join(WORKFLOW, 'PROJECT');
@@ -45,6 +46,15 @@ function projectName() {
 
 export function handleProject(res) {
   sendJson(res, 200, { name: projectName(), root: ROOT });
+}
+
+export function handleHealth(res) {
+  sendJson(res, 200, {
+    ok: true,
+    started: STARTED_AT.toISOString(),
+    uptime_sec: Math.floor((Date.now() - STARTED_AT.getTime()) / 1000),
+    project: projectName(),
+  });
 }
 
 // Common envelope: lists agents/queue/transitions so frontend keeps

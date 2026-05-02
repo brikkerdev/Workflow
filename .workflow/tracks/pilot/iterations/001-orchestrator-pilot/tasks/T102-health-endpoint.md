@@ -3,7 +3,7 @@ id: T102
 title: Server — endpoint GET /api/health
 iteration: 001
 track: pilot
-status: todo
+status: done
 attempts: 0
 deps: []
 estimate: S
@@ -36,3 +36,4 @@ expected_files:
 - [ ] (план появится здесь)
 
 ## Notes
+- 2026-05-02: добавлен `STARTED_AT` (модульная константа) и `handleHealth(res)` в handlers.mjs; роут `GET /api/health` в server.mjs. Smoke-test двумя curl с интервалом 2с — uptime_sec вырос 1→3, project=Workflow.

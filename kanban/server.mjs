@@ -18,7 +18,7 @@ import {
   handleAgentsList, handleAgent, handleAgentCreate, handleAgentUpdate, handleAgentDelete,
   handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
   handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
-  handleProject, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
+  handleProject, handleHealth, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
   handleHowToVerify,
   handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
@@ -59,6 +59,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/tracks') return handleTracks(res);
       if (p === '/api/queue') return handleQueueStatus(res);
       if (p === '/api/project') return handleProject(res);
+      if (p === '/api/health') return handleHealth(res);
       if (p === '/api/agents') return handleAgentsList(res);
       if (p === '/api/stats') return handleStatsAggregate(res);
       if (p === '/api/instances') return handleInstancesList(res);
