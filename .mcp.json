@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "workflow": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Workflow/kanban/mcp/server.mjs"
+      ],
+      "env": {
+        "WORKFLOW_PROJECT": "C:/Workflow",
+        "WORKFLOW_KANBAN": "http://127.0.0.1:7777"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "task_id": "T374",
+  "by_session": {
+    "393c841a-a1bf-4763-9d87-001cebbb8535:T374": {
+      "ts": "2026-05-02T18:43:36.825Z",
+      "input": 61,
+      "output": 21509,
+      "cache_read": 2247032,
+      "cache_creation": 28714,
+      "messages": 31
+    }
+  },
+  "totals": {
+    "input": 61,
+    "output": 21509,
+    "cache_read": 2247032,
+    "cache_creation": 28714,
+    "messages": 31,
+    "runs": 1
+  }
+}

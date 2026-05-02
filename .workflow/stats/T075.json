@@ -1,0 +1,21 @@
+{
+  "task_id": "T075",
+  "by_session": {
+    "c81ae3e5-bc19-4f00-a110-7018dbd66f81:T075": {
+      "ts": "2026-05-02T18:43:36.962Z",
+      "input": 102,
+      "output": 91452,
+      "cache_read": 16701056,
+      "cache_creation": 94679,
+      "messages": 72
+    }
+  },
+  "totals": {
+    "input": 102,
+    "output": 91452,
+    "cache_read": 16701056,
+    "cache_creation": 94679,
+    "messages": 72,
+    "runs": 1
+  }
+}
