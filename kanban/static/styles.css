@@ -2223,3 +2223,5 @@ select.input {
 .fin-root { font-size: 11px; color: var(--fg-2); }
 .fin-dirty { color: var(--dot-blocked); font-weight: 600; }
 .fin-summary-input.textarea { width: 100%; min-height: 70px; max-height: 160px; }
+.health-dot { display:inline-block; width:10px; height:10px; border-radius:50%; background: var(--dot-active, #2ea043); transition: background .2s; align-self:center; margin-right:6px; }
+.health-dot.down { background:#d04a3a; }

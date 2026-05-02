@@ -3,7 +3,7 @@ id: T103
 title: Frontend — индикатор здоровья сервера
 iteration: 001
 track: pilot
-status: todo
+status: done
 attempts: 0
 deps: [T102]
 estimate: S
@@ -37,3 +37,4 @@ expected_files:
 - [ ] (план появится здесь)
 
 ## Notes
+- 2026-05-02: `<span id="health-dot">` в topbar-right, стили в styles.css (зелёный/красный 10px, fallback hex), pollHealth() с AbortController(3s) + setInterval(10s), запуск в DOMContentLoaded. Ошибки fetch проглатываются. Браузерный тест user-side по exit criteria итерации.

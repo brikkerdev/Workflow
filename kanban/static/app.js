@@ -702,7 +702,25 @@ document.addEventListener('DOMContentLoaded', () => {
   bindEventStream();
   // Slow fallback poll (in case SSE drops) — once per 30s.
   setInterval(refresh, 30000);
+
+  pollHealth();
+  setInterval(pollHealth, 10000);
 });
+
+async function pollHealth() {
+  const dot = document.getElementById('health-dot');
+  if (!dot) return;
+  let ok = false;
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
+    clearTimeout(tid);
+    ok = r.ok;
+  } catch {}
+  dot.classList.toggle('down', !ok);
+  dot.title = ok ? 'server: ok' : 'server: down';
+}
 
 // ============ Server-Sent Events ============
 let SSE = null;
