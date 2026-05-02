@@ -99,7 +99,7 @@ async function renderStats() {
     </div>
   ` : '<div class="tracks-empty"><h2>No data yet</h2><p>finish a dispatched agent — totals are recorded by the Stop hook.</p></div>';
 
-  view.innerHTML = `<div class="stats-page">${headerHtml}${agentsHtml}${tasksHtml}</div>`;
+  view.innerHTML = `<div class="stats-page"><div class="stats-inner">${headerHtml}${agentsHtml}${tasksHtml}</div></div>`;
 
   view.querySelectorAll('.stats-task-row').forEach(tr => {
     tr.addEventListener('click', () => {

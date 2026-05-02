@@ -2066,7 +2066,13 @@ select.input {
 }
 
 /* ============ stats page ============ */
-.stats-page { padding: 28px 32px; max-width: 1200px; margin: 0 auto; }
+.stats-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px 80px;
+  width: 100%;
+}
+.stats-inner { max-width: 1200px; margin: 0 auto; }
 .stats-loading { padding: 40px; color: var(--fg-2); font-family: var(--font-mono); }
 .stats-grand {
   display: grid;
