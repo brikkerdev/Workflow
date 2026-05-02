@@ -3,7 +3,7 @@ id: T101
 title: Logger — ротация логов старше 14 дней
 iteration: 001
 track: pilot
-status: todo
+status: done
 attempts: 0
 deps: []
 estimate: S
@@ -34,3 +34,4 @@ expected_files:
 - [ ] (план появится здесь)
 
 ## Notes
+- 2026-05-02: ротация добавлена через `_rotated` Set дней + `rotateOldLogs(day)` в logFile(). Парсинг имён регексом `^\d{4}-\d{2}-\d{2}$`, удаление через `fs.rmSync(...,{recursive:true,force:true})`, всё в try/catch. Smoke-test через `node -e "import('./kanban/lib/logger.mjs')..."` прошёл.

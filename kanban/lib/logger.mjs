@@ -19,16 +19,42 @@ function ts() {
 // Per-source, per-day file handle cache.
 // Key: "YYYY-MM-DD/source"  Value: absolute file path (dir already created)
 const _ready = new Set();
+// Days for which rotation has already run this process.
+const _rotated = new Set();
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_AGE_DAYS = 14;
+
+function rotateOldLogs(day) {
+  if (_rotated.has(day)) return;
+  _rotated.add(day);
+  try {
+    const todayMs = new Date(day).getTime();
+    if (!Number.isFinite(todayMs)) return;
+    let entries;
+    try { entries = fs.readdirSync(LOG_BASE); } catch { return; }
+    for (const name of entries) {
+      if (!DATE_RE.test(name)) continue;
+      const ms = new Date(name).getTime();
+      if (!Number.isFinite(ms)) continue;
+      const ageDays = (todayMs - ms) / 86400000;
+      if (ageDays > MAX_AGE_DAYS) {
+        try { fs.rmSync(path.join(LOG_BASE, name), { recursive: true, force: true }); } catch {}
+      }
+    }
+  } catch {}
+}
 
 function logFile(source) {
   const day = today();
   const key = `${day}/${source}`;
   if (!_ready.has(key)) {
+    rotateOldLogs(day);
     const dir = path.join(LOG_BASE, day);
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
     _ready.add(key);
   }
-  return path.join(LOG_BASE, today(), `${source}.log`);
+  return path.join(LOG_BASE, day, `${source}.log`);
 }
 
 function write(source, level, tag, msg) {
