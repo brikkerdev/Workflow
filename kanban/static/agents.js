@@ -17,15 +17,29 @@ function fmtTokens(n) {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+function relTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 5) return `<5s ago`;
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
 function instanceChip(inst) {
   const tok = inst.tokens_used ? fmtTokens(inst.tokens_used) : '';
   const taskBit = inst.current_task_id ? ` · ${escapeHtml(inst.current_task_id)}` : '';
+  const seen = relTime(inst.last_seen || inst.started_at);
   return `
-    <button class="inst-chip s-${escapeHtml(inst.status)}" data-id="${escapeHtml(inst.id)}" title="${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${inst.current_task_id ? ' · on ' + inst.current_task_id : ''}${tok ? ' · ' + tok + ' tok' : ''}">
+    <button class="inst-chip s-${escapeHtml(inst.status)}" data-id="${escapeHtml(inst.id)}" title="${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${inst.current_task_id ? ' · on ' + inst.current_task_id : ''}${tok ? ' · ' + tok + ' tok' : ''} · seen ${escapeHtml(seen)}">
       <span class="inst-chip-dot"></span>
       <span class="inst-chip-name">${escapeHtml(inst.name || inst.id)}</span>
       <span class="inst-chip-task muted">${taskBit}</span>
       <span class="inst-chip-tok muted" data-tokens>${tok}</span>
+      <span class="muted" data-last-seen style="margin-left:6px;font-size:11px;opacity:.6">${escapeHtml(seen)}</span>
     </button>
   `;
 }
@@ -48,7 +62,8 @@ function openInstanceMenu(inst, anchorEl) {
     <div class="inst-menu-meta muted">
       id ${escapeHtml(inst.id)}<br>
       status ${escapeHtml(inst.status)}${inst.current_task_id ? ' · on ' + escapeHtml(inst.current_task_id) : ''}<br>
-      tokens ${fmtTokens(inst.tokens_used)} · pid ${inst.terminal_pid || '?'}${inst.session_id ? '<br>session ' + escapeHtml(inst.session_id.slice(0, 8)) : ''}
+      tokens ${fmtTokens(inst.tokens_used)} · pid ${inst.terminal_pid || '?'}${inst.session_id ? '<br>session ' + escapeHtml(inst.session_id.slice(0, 8)) : ''}<br>
+      last seen ${escapeHtml(relTime(inst.last_seen || inst.started_at))}
     </div>
     <div class="inst-menu-actions">
       ${taskLink}

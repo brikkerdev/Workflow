@@ -3,7 +3,7 @@ id: T105
 title: Agents — relative last-seen в строках
 iteration: 001
 track: pilot
-status: todo
+status: done
 attempts: 0
 deps: []
 estimate: S
@@ -35,3 +35,4 @@ expected_files:
 - [ ] (план появится здесь)
 
 ## Notes
+- 2026-05-02: `relTime(iso)` helper в agents.js, добавлен span с last-seen в `instanceChip`, обогащены title и inst-menu-meta. Фолбэк `started_at`, при невалидной дате — `—`. patchInstanceTokens last-seen не патчит — обновится на следующем полном renderAgents.
