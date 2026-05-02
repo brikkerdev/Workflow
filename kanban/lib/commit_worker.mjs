@@ -8,7 +8,7 @@
 // Protocol:
 //   parent → worker:
 //     legacy: { id, paths, message, author?, push? }
-//     resolve+commit: { id, tid, mySnapshot, otherSnapshots, message, author?, push?, ignoredPrefixes? }
+//     resolve+commit: { id, tid, otherTids, message, author?, push?, ignoredPrefixes? }
 //   worker → parent: { id, ok, commit?, error?, note? }
 
 import { parentPort, workerData } from 'node:worker_threads';
@@ -17,7 +17,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = workerData.root;
+const SNAP_DIR = path.join(ROOT, '.workflow', 'snapshots');
 const DEFAULT_IGNORED_PREFIXES = ['.workflow/snapshots/', '.workflow/stats/'];
+
+function snapshotPathFor(tid) {
+  return path.join(SNAP_DIR, `${tid}.json`);
+}
+function loadSnapshotFile(tid) {
+  if (!tid) return null;
+  try { return JSON.parse(fs.readFileSync(snapshotPathFor(tid), 'utf-8')); }
+  catch { return null; }
+}
+function deleteSnapshotFile(tid) {
+  if (!tid) return;
+  try { fs.unlinkSync(snapshotPathFor(tid)); } catch {}
+}
 const HAS_GIT = (() => {
   try { return fs.statSync(path.join(ROOT, '.git')).isDirectory() || fs.statSync(path.join(ROOT, '.git')).isFile(); }
   catch { return false; }
@@ -73,11 +87,18 @@ function diffAgainstSnap(snap, cur) {
   return out;
 }
 
-function resolvePathsForTask({ mySnapshot, otherSnapshots, ignoredPrefixes }) {
+function resolvePathsForTask({ tid, otherTids, ignoredPrefixes }) {
   const cur = currentDirtyMap(ignoredPrefixes || DEFAULT_IGNORED_PREFIXES);
+  // Read snapshots at job-processing time, not enqueue time. Prior committed
+  // jobs have already deleted their snapshot files, so they correctly drop
+  // out of the "others" set instead of claiming every dirty path with their
+  // stale empty-tree state.
+  const mySnapshot = loadSnapshotFile(tid);
   const ours = diffAgainstSnap(mySnapshot, cur);
   if (!ours.size) return [];
-  for (const s of (otherSnapshots || [])) {
+  for (const otid of (otherTids || [])) {
+    const s = loadSnapshotFile(otid);
+    if (!s) continue;
     for (const p of diffAgainstSnap(s, cur)) ours.delete(p);
   }
   return [...ours];
@@ -124,10 +145,16 @@ parentPort.on('message', (job) => {
     let paths = job.paths;
     // Resolve+commit mode: compute paths inside the worker so it's atomic
     // with the commit and never blocks the main thread on git status/hash.
-    if (!paths && job.mySnapshot !== undefined) {
+    if (!paths && job.tid) {
       paths = resolvePathsForTask(job);
     }
     result = runCommit({ ...job, paths });
+    // Delete the snapshot here, before the next queued job runs. If we let the
+    // main thread do it, the worker may already be resolving the next job's
+    // paths (and reading this snapshot from disk) before main runs the
+    // continuation that unlinks it — the next task ends up subtracting our
+    // stale snapshot and committing nothing.
+    if (result && result.commit && job.tid) deleteSnapshotFile(job.tid);
   } catch (e) { result = { ok: false, error: String(e.message || e) }; }
   parentPort.postMessage({ id: job.id, ...result });
 });

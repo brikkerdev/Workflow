@@ -891,16 +891,14 @@ export async function handleVerify(req, res, tid) {
 // resolution against current dirty tree happens inside the worker — that way
 // it's serialised with the commit (no race against parallel commits) and the
 // main event loop never blocks on git status/hash-object.
-function collectSnapshotsForCommit(tid) {
-  const my = loadSnapshot(tid);
+function collectOtherTidsForCommit(tid) {
   const others = [];
   for (const t of listAllTasks()) {
     if (t.id === tid) continue;
     if (t.status !== 'in-progress' && t.status !== 'verifying') continue;
-    const s = loadSnapshot(t.id);
-    if (s) others.push(s);
+    others.push(t.id);
   }
-  return { my, others };
+  return others;
 }
 
 async function runCommitPush(taskPath, fm, summary) {
@@ -911,14 +909,15 @@ async function runCommitPush(taskPath, fm, summary) {
       ? `${fm.assignee} <${fm.assignee}@workflow.local>`
       : null;
 
-    const { my, others } = collectSnapshotsForCommit(tid);
-    // Missing snapshot: don't bail. A prior verify's "no changes" path used to
-    // delete the snapshot, leaving subsequent real verifies with nothing to
-    // compare against. Worker treats null mySnapshot as empty — claims every
-    // dirty path that isn't owned by another active task.
+    const otherTids = collectOtherTidsForCommit(tid);
+    // Worker re-reads snapshots at job-processing time. Critical when multiple
+    // verifies queue near-simultaneously: by the time job N runs, snapshots
+    // for tasks 1..N-1 are already deleted (committed). Reading fresh prevents
+    // a stale empty-tree snapshot from claiming every dirty path and leaving
+    // job N with "no changes".
     const message = `${tid}: ${title}\n\n${summary || ''}`.trim();
     const result = await commitInWorker({
-      tid, mySnapshot: my || null, otherSnapshots: others,
+      tid, otherTids,
       message, author, push: true,
     });
     logger.info('commit', `tid=${tid} ok=${result.ok} commit=${result.commit || ''} note=${result.note || ''} err=${result.error || ''}`);
