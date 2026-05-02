@@ -3,7 +3,7 @@ id: T104
 title: Stats — бейдж total tasks done
 iteration: 001
 track: pilot
-status: todo
+status: done
 attempts: 0
 deps: []
 estimate: S
@@ -35,3 +35,4 @@ expected_files:
 - [ ] (план появится здесь)
 
 ## Notes
+- 2026-05-02: бейдж `<N> done` рядом с h1 "Stats", inline-style (без CSS-классов). N = sum(by_agent[i].done) из /api/stats. Пересчёт на каждый renderStats().

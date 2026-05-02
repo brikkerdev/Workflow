@@ -23,10 +23,11 @@ async function renderStats() {
   const { grand = {}, by_agent = [], by_task = [] } = STATS_CACHE || {};
 
   const grandTotal = (grand.input || 0) + (grand.output || 0);
+  const doneTotal = by_agent.reduce((s, a) => s + (a.done || 0), 0);
   const headerHtml = `
     <div class="tracks-header">
       <div>
-        <h1>Stats</h1>
+        <h1>Stats<span style="display:inline-block;margin-left:10px;padding:2px 8px;border-radius:10px;background:var(--bg-2);font-size:12px;font-weight:500;vertical-align:middle">${doneTotal} done</span></h1>
         <div class="subtitle mono">${grand.tasks || 0} tasks tracked · ${fmtTok(grandTotal)} tokens · ${grand.runs || 0} runs</div>
       </div>
     </div>
