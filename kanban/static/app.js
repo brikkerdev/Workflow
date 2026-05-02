@@ -10,6 +10,7 @@ function setTab(tab) {
   }
   if (tab === 'tracks') renderTracks();
   else if (tab === 'agents') renderAgents();
+  else if (tab === 'runs') renderRuns();
   else if (tab === 'stats') renderStats();
   else renderBoard();
 }

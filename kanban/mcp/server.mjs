@@ -257,35 +257,35 @@ tools.push(
     },
   },
   {
-    name: 'workflow_task_complete',
-    description: 'Atomically: commit the task\'s files, append summary to Notes, set status=done. Use after a sub-agent (or you) finished a task in /iterate. Replaces manual git add/commit + frontmatter edit.',
+    name: 'workflow_task_done',
+    description: 'Mark a task done in the orchestrator flow: status=done + summary appended to Notes. NO git work — the iteration is committed as one big commit later via workflow_iteration_submit. Replaces manual frontmatter edit.',
     inputSchema: {
       type: 'object',
       properties: {
         task_id: { type: 'string' },
-        summary: { type: 'string', description: '1-3 lines on what was done; appended to Notes and used as the commit body.' },
-        files: { type: 'array', items: { type: 'string' }, description: 'Files to commit (defaults to task.expected_files). The task .md itself is added automatically.' },
-        author: { type: 'string', description: 'Override commit author. Defaults to "orchestrator <orchestrator@workflow.local>".' },
+        summary: { type: 'string', description: '1-3 lines on what was done; appended to Notes and reused in the iteration commit body.' },
       },
       required: ['task_id'],
     },
-    handler: async ({ task_id, summary, files, author }) =>
-      api('POST', `/api/task/${encodeURIComponent(task_id)}/complete`, { summary, files, author }),
+    handler: async ({ task_id, summary }) =>
+      api('POST', `/api/task/${encodeURIComponent(task_id)}/done`, { summary }),
   },
   {
-    name: 'workflow_iteration_close',
-    description: 'Mark iteration done (or abandoned) and clear the track\'s ACTIVE pointer. No git work — per-task commits already landed via workflow_task_complete.',
+    name: 'workflow_iteration_submit',
+    description: 'Final step of /iterate: ONE commit covering every done task in this iteration (their expected_files + task .md files + iteration README with status flipped). Bumps iteration status to done|abandoned and clears the track\'s ACTIVE pointer. No push — the user runs `git push` manually. Call only after the user explicitly approves the iteration.',
     inputSchema: {
       type: 'object',
       properties: {
         track: { type: 'string' },
         id: { type: 'string' },
+        summary: { type: 'string', description: 'Iteration-level summary; lands in the commit body above the task list.' },
         status: { type: 'string', enum: ['done', 'abandoned'], default: 'done' },
+        author: { type: 'string', description: 'Override commit author. Defaults to "orchestrator <orchestrator@workflow.local>".' },
       },
       required: ['track', 'id'],
     },
-    handler: async ({ track, id, status }) =>
-      api('POST', '/api/iteration/close', { track, id, status: status || 'done' }),
+    handler: async ({ track, id, summary, status, author }) =>
+      api('POST', '/api/iteration/submit', { track, id, summary, status: status || 'done', author }),
   },
 );
 

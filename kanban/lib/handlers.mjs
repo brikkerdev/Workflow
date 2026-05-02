@@ -28,6 +28,7 @@ import { listAttachments, saveAttachment, deleteAttachment, readAttachment } fro
 import { captureSnapshot, loadSnapshot, deleteSnapshot } from './snapshot.mjs';
 import { commitInWorker } from './commit_queue.mjs';
 import { recordRun, statsTotals, allTaskTotals } from './stats.mjs';
+import { allIterStats } from './iter_stats.mjs';
 import { logger } from './logger.mjs';
 import { isUnityProject } from './project_kind.mjs';
 
@@ -1462,11 +1463,11 @@ export function handleIterationLoad(res, query) {
   });
 }
 
-// POST /api/task/:id/complete  body: { summary?, files?, author? }
-// Atomic close: commit the task's files, append summary to Notes, set
-// status=done. Bypasses kanban's todo→done transition guard because the
-// orchestrator owns the lifecycle here.
-export async function handleOrchTaskComplete(req, res, tid) {
+// POST /api/task/:id/done  body: { summary? }
+// Mark a task done in /iterate flow. NO git work — the iteration submits as
+// one commit later via /api/iteration/submit. Just flips status=done in the
+// task's frontmatter and appends summary to Notes.
+export async function handleOrchTaskDone(req, res, tid) {
   const [p, fm, body] = findTask(tid);
   if (!p) return sendJson(res, 404, { error: 'task not found' });
   let payload = {};
@@ -1474,13 +1475,6 @@ export async function handleOrchTaskComplete(req, res, tid) {
   catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
 
   const summary = String(payload.summary || '').trim();
-  let files = Array.isArray(payload.files) ? payload.files.slice() : null;
-  if (!files || !files.length) {
-    files = Array.isArray(fm.expected_files) ? fm.expected_files.slice() : [];
-  }
-  // Always include the task file itself so the status flip is part of the commit.
-  if (!files.includes(p)) files.push(p);
-
   let updatedBody = body;
   if (summary) {
     const block = `### Done — ${fmtDate()}\n\n${summary}`;
@@ -1489,42 +1483,22 @@ export async function handleOrchTaskComplete(req, res, tid) {
   fm.status = 'done';
   saveTask(p, fm, updatedBody);
 
-  const author = payload.author || 'orchestrator <orchestrator@workflow.local>';
-  const title = fm.title || tid;
-  const message = `${tid}: ${title}\n\n${summary}`.trim();
-
-  // Use commit_worker in legacy mode: explicit paths.
-  let git = { commit: null, note: null, error: null };
-  try {
-    const result = await commitInWorker({
-      paths: files, message, author, push: false,
-    });
-    if (result.ok) {
-      git.commit = result.commit || null;
-      git.note = result.note || null;
-      if (result.error) git.error = result.error; // e.g. push failed (we don't push here, but keep for safety)
-    } else {
-      git.error = result.error || 'commit failed';
-    }
-  } catch (e) {
-    git.error = String(e.message || e);
-  }
-
-  broadcastChange('change', { kind: 'orch_complete', task_id: tid, commit: git.commit });
-  return sendJson(res, 200, { ok: !git.error, task_id: tid, status: 'done', ...git });
+  broadcastChange('change', { kind: 'orch_task_done', task_id: tid });
+  return sendJson(res, 200, { ok: true, task_id: tid, status: 'done', path: rel(p) });
 }
 
-// POST /api/iteration/close  body: { track, id, status: 'done'|'abandoned' }
-// Light close: rewrites iteration README frontmatter and clears the track's
-// ACTIVE pointer if it points at this iteration. No git work — orchestrator
-// already committed per-task.
-export async function handleIterationClose(req, res) {
+// POST /api/iteration/submit  body: { track, id, summary?, status?, author? }
+// One-shot iteration close: collects every task done in this iteration (its
+// expected_files + the task .md), plus the iteration README with status flip,
+// and produces a SINGLE commit. No push — the user runs `git push` manually.
+export async function handleIterationSubmit(req, res) {
   let payload = {};
   try { payload = await readBody(req); }
   catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
   const track = String(payload.track || '').trim();
   const iterId = String(payload.id || '').trim();
   const status = String(payload.status || 'done').trim();
+  const summary = String(payload.summary || '').trim();
   if (!track || !iterId) return sendJson(res, 400, { error: 'track and id required' });
   if (status !== 'done' && status !== 'abandoned') {
     return sendJson(res, 400, { error: 'status must be done or abandoned' });
@@ -1532,6 +1506,7 @@ export async function handleIterationClose(req, res) {
   const iter = findIteration(track, iterId);
   if (!iter) return sendJson(res, 404, { error: 'iteration not found' });
 
+  // Flip iteration README status.
   const readmePath = path.join(iter.dir, 'README.md');
   if (exists(readmePath)) {
     const [fm, body] = parseTask(readText(readmePath));
@@ -1540,16 +1515,131 @@ export async function handleIterationClose(req, res) {
       fs.writeFileSync(readmePath, serializeTask(fm, body || ''), 'utf-8');
     }
   }
-  try {
-    const activeFile = trackActiveFile(track);
-    if (exists(activeFile)) {
-      const cur = readText(activeFile).trim();
-      if (cur === iterId) fs.rmSync(activeFile, { force: true });
-    }
-  } catch {}
 
-  broadcastChange('change', { kind: 'orch_iter_close', track, id: iterId, status });
-  return sendJson(res, 200, { ok: true, track, id: iterId, status });
+  // Collect files: every done task's expected_files + the task .md path,
+  // plus the README we just touched.
+  const tasks = listTasksInIteration(track, iterId);
+  const fileSet = new Set();
+  const doneTids = [];
+  for (const t of tasks) {
+    if ((t.status || 'todo') !== 'done') continue;
+    doneTids.push(t.id);
+    if (Array.isArray(t.expected_files)) {
+      for (const f of t.expected_files) if (f) fileSet.add(f);
+    }
+    if (t._path) fileSet.add(t._path);
+  }
+  fileSet.add(rel(readmePath));
+  const files = [...fileSet];
+
+  // Build commit message.
+  const iterTitle = iter.fm.title || iter.slug || iterId;
+  const tidLine = doneTids.length ? `Tasks: ${doneTids.join(', ')}` : '';
+  const lines = [`iter ${iterId}: ${iterTitle}`];
+  if (summary) lines.push('', summary);
+  if (tidLine) lines.push('', tidLine);
+  const message = lines.join('\n');
+  const author = payload.author || 'orchestrator <orchestrator@workflow.local>';
+
+  // Run the commit. push:false — user pushes manually.
+  let git = { commit: null, note: null, error: null };
+  try {
+    const result = await commitInWorker({ paths: files, message, author, push: false });
+    if (result.ok) {
+      git.commit = result.commit || null;
+      git.note = result.note || null;
+    } else {
+      git.error = result.error || 'commit failed';
+    }
+  } catch (e) {
+    git.error = String(e.message || e);
+  }
+
+  // Clear ACTIVE pointer only after a successful commit (or no-changes note).
+  // If commit truly failed, leave ACTIVE so the user can retry the submit.
+  if (git.commit || (git.note && !git.error)) {
+    try {
+      const activeFile = trackActiveFile(track);
+      if (exists(activeFile)) {
+        const cur = readText(activeFile).trim();
+        if (cur === iterId) fs.rmSync(activeFile, { force: true });
+      }
+    } catch {}
+  }
+
+  broadcastChange('change', { kind: 'orch_iter_submit', track, id: iterId, status, commit: git.commit });
+  return sendJson(res, 200, {
+    ok: !git.error,
+    track, id: iterId, status,
+    tasks: doneTids, files,
+    ...git,
+  });
+}
+
+// GET /api/iterations/runs
+// Per-iteration token aggregation. The poller writes one record per
+// iteration that has been touched by an orchestrator session; we cross it
+// with the live track/iteration list so you also see status, title, and
+// task counts in the same row.
+export function handleIterationRuns(res) {
+  const stats = allIterStats();
+  // Index iteration metadata by `${track}/${iter}`.
+  const meta = new Map();
+  const orphans = []; // stats for iters not currently on disk (archived?)
+  for (const slug of listTrackSlugs()) {
+    for (const iter of listIterations(slug)) {
+      const tasks = listTasksInIteration(slug, iter.id);
+      meta.set(`${slug}/${iter.id}`, {
+        track: slug,
+        id: iter.id,
+        slug: iter.slug,
+        title: iter.fm.title || '',
+        status: iter.fm.status || 'planned',
+        started: iter.fm.started || '',
+        task_count: tasks.length,
+        done_count: tasks.filter(t => (t.status || 'todo') === 'done').length,
+      });
+    }
+  }
+  const seen = new Set();
+  const rows = [];
+  for (const s of stats) {
+    const key = `${s.track}/${s.iter_id}`;
+    seen.add(key);
+    const m = meta.get(key);
+    rows.push({
+      track: s.track,
+      id: s.iter_id,
+      slug: m?.slug || '',
+      title: m?.title || '',
+      status: m?.status || 'unknown',
+      started: m?.started || '',
+      task_count: m?.task_count || 0,
+      done_count: m?.done_count || 0,
+      totals: s.totals || null,
+      runs: Object.entries(s.by_session || {}).map(([session_id, v]) => ({ session_id, ...v })),
+    });
+    if (!m) orphans.push(key);
+  }
+  // Add iterations that exist on disk but have no orchestrator stats yet
+  // (planned/active/done but never touched by /iterate).
+  for (const [key, m] of meta) {
+    if (seen.has(key)) continue;
+    rows.push({
+      ...m,
+      totals: null,
+      runs: [],
+    });
+  }
+  rows.sort((a, b) => {
+    // Active first, then started date desc, then track/id.
+    const aa = a.status === 'active' ? 0 : 1;
+    const bb = b.status === 'active' ? 0 : 1;
+    if (aa !== bb) return aa - bb;
+    if ((b.started || '') !== (a.started || '')) return (b.started || '').localeCompare(a.started || '');
+    return `${a.track}/${a.id}`.localeCompare(`${b.track}/${b.id}`);
+  });
+  return sendJson(res, 200, { iterations: rows });
 }
 
 // PUT /api/track/:slug/iteration/:id/checklist  body: { content }

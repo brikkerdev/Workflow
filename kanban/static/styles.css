@@ -2132,6 +2132,29 @@ select.input {
   color: #fff;
 }
 
+/* Runs page */
+.runs-row { cursor: default; }
+.runs-row-clickable { cursor: pointer; }
+.runs-row-clickable:hover td { background: var(--bg-hover); }
+.runs-expander { display: inline-block; width: 12px; color: var(--fg-3); }
+.runs-session-row td {
+  background: var(--bg-2);
+  font-size: 11px;
+  padding: 4px 12px;
+}
+.runs-session-row td.muted { color: var(--fg-3); }
+.iter-status {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+.iter-status-active { background: var(--accent, #3b82f6); color: #fff; }
+.iter-status-done { background: var(--bg-3, #2a2a2a); color: var(--fg-2); }
+.iter-status-abandoned { color: var(--fg-3); text-decoration: line-through; }
+
 /* token badge on board card */
 .tok-badge {
   font-family: var(--font-mono);
