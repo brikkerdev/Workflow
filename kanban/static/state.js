@@ -1,33 +1,20 @@
-// 5-column model per design.
-// Maps backend status set {todo,queued,in-progress,verifying,review,done} onto
-// 5 visible columns: Backlog, Pending, In progress, Review, Done.
-//
-// Pending is a virtual column: tasks with `auto_dispatch: true` (set by
-// handleIterStart on todo tasks whose deps weren't yet satisfied) live here
-// until their blockers complete and the server cascades them to In progress.
-// They have no dedicated status — colForTask() routes them by flag.
+// Two-column model. The kanban is now a viewer: orchestrator (/iterate)
+// flips status atomically when it commits the iteration. The user can
+// manually drag a task between Todo and Done if they really need to.
 
 const COLUMNS = [
-  { key: 'backlog',     label: 'Backlog',     statuses: ['todo'],                  kbd: '1', primary: 'todo' },
-  { key: 'pending',     label: 'Pending',     statuses: [],                        kbd: '2', primary: 'todo' },
-  { key: 'in-progress', label: 'In progress', statuses: ['in-progress','queued'],  kbd: '3', primary: 'in-progress' },
-  { key: 'review',      label: 'Review',      statuses: ['review','verifying'],    kbd: '4', primary: 'verifying' },
-  { key: 'done',        label: 'Done',        statuses: ['done'],                  kbd: '5', primary: 'done' },
+  { key: 'todo',        label: 'Todo',        statuses: ['todo'],        kbd: '1', primary: 'todo' },
+  { key: 'in-progress', label: 'In progress', statuses: ['in-progress'], kbd: '2', primary: 'in-progress' },
+  { key: 'done',        label: 'Done',        statuses: ['done'],        kbd: '3', primary: 'done' },
 ];
 
-const ALL_STATUSES = ['todo','queued','in-progress','verifying','review','done'];
+const ALL_STATUSES = ['todo', 'in-progress', 'done'];
 
 function colForStatus(status) {
   const c = COLUMNS.find(x => x.statuses.includes(status));
-  return c ? c.key : 'backlog';
+  return c ? c.key : 'todo';
 }
-// Tasks need both fields to bucket — pending is flag-driven, not status-driven.
-function colForTask(t) {
-  if (t && (t.auto_dispatch === true || t.auto_dispatch === 'true') && t.status === 'todo') {
-    return 'pending';
-  }
-  return colForStatus(t ? t.status : null);
-}
+function colForTask(t) { return colForStatus(t ? t.status : null); }
 function statusForCol(colKey) {
   return (COLUMNS.find(x => x.key === colKey) || COLUMNS[0]).primary;
 }
@@ -40,6 +27,8 @@ const STATE = {
   taskIndex: {},
   currentTab: 'iteration',
   boardTrack: null,
+  viewedTrack: null,
+  viewedTrackData: null,
   expandedTracks: new Set(),
   search: '',
 };

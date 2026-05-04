@@ -16,19 +16,16 @@ import {
   handleIterCreate, handleIterUpdate, handleIterActivate, handleIterArchive, handleIterDelete, handleIterReorder,
   handleTaskCreate, handleTaskDelete,
   handleAgentsList, handleAgent, handleAgentCreate, handleAgentUpdate, handleAgentDelete,
-  handleTask, handlePatch, handleDispatch, handleCancelDispatch, handleQueueStatus,
-  handleListAttachments, handleUploadAttachment, handleDeleteAttachment, handleReadAttachment,
-  handleProject, handleHealth, handleVerify, handleClaim, handleSubmitVerify, handleAppendNote, handleSubtasks,
+  handleTask, handlePatch, handleAppendNote, handleSubtasks,
   handleRecordStats, handleStatsAggregate,
   handleHowToVerify,
-  handleIterCloseAuto, handleIterChecklistRead, handleIterChecklistWrite, handleIterStart,
+  handleIterChecklistRead, handleIterChecklistWrite,
+  handleIterIterate, handleIterIterateUnlock,
+  handleTrackChecklistRead, handleTrackChecklistWrite, handleTrackShip,
   handleIterFinalizeInfo, handleIterFinalize,
   handleIterationLoad, handleOrchTaskDone, handleIterationSubmit, handleIterationRuns,
-  handleInstancesList, handleInstanceGet, handleInstanceSpawn, handleInstanceKill,
-  handleInstanceHeartbeat, handleInstanceRespawn, handleInstancePrecompact,
-  handleAgentLoopDecide, handleNextTask,
+  handleProject, handleHealth,
 } from './lib/handlers.mjs';
-import { startInstanceMonitor } from './lib/instance_monitor.mjs';
 import { startStatsPoller } from './lib/stats_poller.mjs';
 
 function matchAttachment(p) {
@@ -58,18 +55,14 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/events') return attachSseClient(req, res);
       if (p === '/api/board') return handleBoard(res, u.query);
       if (p === '/api/tracks') return handleTracks(res);
-      if (p === '/api/queue') return handleQueueStatus(res);
       if (p === '/api/project') return handleProject(res);
       if (p === '/api/health') return handleHealth(res);
       if (p === '/api/agents') return handleAgentsList(res);
       if (p === '/api/stats') return handleStatsAggregate(res);
-      if (p === '/api/instances') return handleInstancesList(res);
       if (p === '/api/iteration/load') return handleIterationLoad(res, u.query);
       if (p === '/api/iterations/runs') return handleIterationRuns(res);
 
       let m;
-      m = /^\/api\/instance\/([^/]+)$/.exec(p);
-      if (m) return handleInstanceGet(res, decodeURIComponent(m[1]));
       m = /^\/api\/agent\/([^/]+)$/.exec(p);
       if (m) return handleAgent(res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)$/.exec(p);
@@ -78,6 +71,8 @@ const server = http.createServer(async (req, res) => {
       if (m) return handleIterChecklistRead(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/finalize-info$/.exec(p);
       if (m) return handleIterFinalizeInfo(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      m = /^\/api\/track\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleTrackChecklistRead(res, decodeURIComponent(m[1]));
 
       const att = matchAttachment(p);
       if (att) {
@@ -86,14 +81,13 @@ const server = http.createServer(async (req, res) => {
       }
       if (p.startsWith('/api/task/')) return handleTask(res, decodeURIComponent(p.split('/').pop()), u.query);
     } else if (req.method === 'POST') {
-      // task lifecycle actions
-      let m = /^\/api\/task\/([^/]+)\/(dispatch|verify|claim|submit|note|subtasks|stats|how-to-verify|done)$/.exec(p);
+      // task lifecycle actions — orchestrator / user metadata only.
+      // /done is the orchestrator's status flip; /note, /subtasks,
+      // /how-to-verify, /stats are metadata writes used by /iterate or the
+      // user via the modal. Legacy dispatch/claim/verify/submit are gone.
+      let m = /^\/api\/task\/([^/]+)\/(note|subtasks|stats|how-to-verify|done)$/.exec(p);
       if (m) {
         const tid = decodeURIComponent(m[1]); const action = m[2];
-        if (action === 'dispatch') return handleDispatch(res, tid);
-        if (action === 'verify') return handleVerify(req, res, tid);
-        if (action === 'claim') return handleClaim(req, res, tid);
-        if (action === 'submit') return handleSubmitVerify(req, res, tid);
         if (action === 'note') return handleAppendNote(req, res, tid);
         if (action === 'subtasks') return handleSubtasks(req, res, tid);
         if (action === 'stats') return handleRecordStats(req, res, tid);
@@ -110,33 +104,21 @@ const server = http.createServer(async (req, res) => {
       // agents
       if (p === '/api/agents') return handleAgentCreate(req, res);
 
-      // instances
-      if (p === '/api/instance/spawn') return handleInstanceSpawn(req, res);
-      if (p === '/api/agent-loop/decide') return handleAgentLoopDecide(req, res);
-      if (p === '/api/next-task') return handleNextTask(req, res);
-      m = /^\/api\/instance\/([^/]+)\/(kill|heartbeat|respawn|precompact)$/.exec(p);
-      if (m) {
-        const id = decodeURIComponent(m[1]); const action = m[2];
-        if (action === 'kill') return handleInstanceKill(req, res, id);
-        if (action === 'heartbeat') return handleInstanceHeartbeat(req, res, id);
-        if (action === 'respawn') return handleInstanceRespawn(req, res, id);
-        if (action === 'precompact') return handleInstancePrecompact(req, res, id);
-      }
-
       // iterations under a track
       m = /^\/api\/track\/([^/]+)\/iterations$/.exec(p);
       if (m) return handleIterCreate(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iterations\/reorder$/.exec(p);
       if (m) return handleIterReorder(req, res, decodeURIComponent(m[1]));
-      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|close-auto|start|finalize)$/.exec(p);
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/(activate|archive|finalize|iterate)$/.exec(p);
       if (m) {
         const ts = decodeURIComponent(m[1]); const iid = decodeURIComponent(m[2]); const action = m[3];
         if (action === 'activate') return handleIterActivate(res, ts, iid);
         if (action === 'archive') return handleIterArchive(req, res, ts, iid);
-        if (action === 'close-auto') return handleIterCloseAuto(req, res, ts, iid);
-        if (action === 'start') return handleIterStart(req, res, ts, iid);
         if (action === 'finalize') return handleIterFinalize(req, res, ts, iid);
+        if (action === 'iterate') return handleIterIterate(res, ts, iid);
       }
+      m = /^\/api\/track\/([^/]+)\/ship$/.exec(p);
+      if (m) return handleTrackShip(req, res, decodeURIComponent(m[1]));
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/tasks$/.exec(p);
       if (m) return handleTaskCreate(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
 
@@ -145,6 +127,8 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'PUT') {
       let m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/checklist$/.exec(p);
       if (m) return handleIterChecklistWrite(req, res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      m = /^\/api\/track\/([^/]+)\/checklist$/.exec(p);
+      if (m) return handleTrackChecklistWrite(req, res, decodeURIComponent(m[1]));
     } else if (req.method === 'PATCH') {
       let m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrackUpdate(req, res, decodeURIComponent(m[1]));
@@ -156,12 +140,10 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'DELETE') {
       let m = /^\/api\/track\/([^/]+)$/.exec(p);
       if (m) return handleTrackDelete(res, decodeURIComponent(m[1]));
+      m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)\/iterate-lock$/.exec(p);
+      if (m) return handleIterIterateUnlock(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
       m = /^\/api\/track\/([^/]+)\/iteration\/([^/]+)$/.exec(p);
       if (m) return handleIterDelete(res, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
-      if (p.startsWith('/api/task/') && p.endsWith('/dispatch')) {
-        const parts = p.split('/');
-        return handleCancelDispatch(res, decodeURIComponent(parts[parts.length - 2]));
-      }
       const att = matchAttachment(p);
       if (att && att.name) return handleDeleteAttachment(res, att.tid, att.name);
       m = /^\/api\/task\/([^/]+)$/.exec(p);
@@ -209,7 +191,6 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(args.port, args.host);
-startInstanceMonitor();
 startStatsPoller();
 
 // Watch .workflow/ for external edits (agents writing task files etc.)

@@ -1,12 +1,11 @@
 ---
 id: 001
-slug: orchestrator-pilot
-track: pilot
-status: active
-started: 2026-05-02
 title: Orchestrator pilot — мелкие kanban-полировки
+track: pilot
+status: done
+slug: orchestrator-pilot
+started: 2026-05-02
 ---
-
 # Iteration 001 — Orchestrator pilot
 
 ## Цель

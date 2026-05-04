@@ -1,8 +1,13 @@
-// Workflow — Tracks page (design markup: track-section / track-head grid / iter-row s-status).
+// Workflow — Tracks page: grid of cards + per-track roadmap view.
 
 const ITER_GLYPHS = { planned: '◯', active: '●', done: '✓', abandoned: '×' };
 
 function renderTracks() {
+  if (STATE.viewedTrack) return renderTrackRoadmap();
+  return renderTracksGrid();
+}
+
+function renderTracksGrid() {
   const view = document.getElementById('view-tracks');
   view.innerHTML = '';
 
@@ -16,19 +21,14 @@ function renderTracks() {
         return (tr.iterations || []).some(it => matchSearch(it.id, it.slug, it.title, it.fm?.title));
       })
     : allTracks;
-  if (STATE.search) {
-    // auto-expand matching tracks during search
-    for (const t of tracks) STATE.expandedTracks.add(t.slug);
-  }
 
   // header
   const header = document.createElement('div');
   header.className = 'tracks-header';
-  const archivedCount = 0; // backend doesn't expose archived list
   header.innerHTML = `
     <div>
       <h1>Tracks</h1>
-      <div class="subtitle mono">${tracks.length} active${archivedCount ? ' · ' + archivedCount + ' archived' : ''}</div>
+      <div class="subtitle mono">${tracks.length} active</div>
     </div>
     <button class="btn btn-primary btn-lg" id="new-track-btn">+ New track</button>
   `;
@@ -44,183 +44,286 @@ function renderTracks() {
     return;
   }
 
-  const list = document.createElement('div');
-  list.className = 'tracks-list';
-  for (const tr of tracks) list.appendChild(renderTrackSection(tr));
-  page.appendChild(list);
+  const grid = document.createElement('div');
+  grid.className = 'tracks-grid';
+  for (const tr of tracks) grid.appendChild(renderTrackCard(tr));
+  page.appendChild(grid);
 
   view.appendChild(page);
 }
 
-function renderTrackSection(tr) {
-  const expanded = STATE.expandedTracks.has(tr.slug);
-  const sec = document.createElement('div');
-  sec.className = 'track-section' + (expanded ? ' expanded' : '');
-
+function renderTrackCard(tr) {
   const counts = countIters(tr.iterations || []);
+  const total = counts.planned + counts.active + counts.done + counts.abandoned;
+  const doneFrac = total ? Math.round((counts.done * 100) / total) : 0;
   const preview = extractGoalPreview(tr.body || '');
   const title = tr.fm?.title || '';
+  const archived = tr.fm?.status === 'archived';
+  const shipped = tr.fm?.status === 'shipped';
+  const activeIter = (tr.iterations || []).find(i => i.id === tr.active);
+  const totalTasks = (tr.iterations || []).reduce((s, i) => s + (i.task_count || 0), 0);
+  const totalDone = (tr.iterations || []).reduce((s, i) => s + (i.done_count || 0), 0);
 
-  const head = document.createElement('div');
-  head.className = 'track-head';
-  head.innerHTML = `
-    <span class="track-toggle">▸</span>
-    <span class="track-slug">${escapeHtml(tr.slug)}</span>
-    <div style="display:flex;align-items:center;gap:14px;min-width:0">
-      ${title ? `<span class="track-title">${escapeHtml(title)}</span>` : ''}
-      ${preview ? `<span class="track-preview">${escapeHtml(preview)}</span>` : ''}
+  const card = document.createElement('div');
+  card.className = 'track-card' + (archived ? ' archived' : '') + (shipped ? ' shipped' : '');
+  card.dataset.slug = tr.slug;
+  card.innerHTML = `
+    <div class="track-card-head">
+      <div class="track-card-titles">
+        <div class="track-card-slug">${escapeHtml(tr.slug)}${shipped ? ' <span class="roadmap-shipped-badge">SHIPPED</span>' : ''}</div>
+        ${title && title !== tr.slug ? `<div class="track-card-title">${escapeHtml(title)}</div>` : ''}
+      </div>
+      <div class="track-card-actions">
+        <button class="iconbtn" title="New iteration" data-act="new-iter">+</button>
+        <button class="iconbtn" title="Edit track" data-act="edit">✎</button>
+        <button class="iconbtn" title="Archive track" data-act="archive">⌫</button>
+      </div>
     </div>
-    <div class="track-meta">
+    ${preview ? `<div class="track-card-preview">${escapeHtml(preview)}</div>` : '<div class="track-card-preview muted">no goal yet</div>'}
+    <div class="track-card-meta">
       <span class="iter-counter c-planned"><span class="iter-counter-glyph">◯</span>${counts.planned}</span>
       <span class="iter-counter c-active"><span class="iter-counter-glyph">●</span>${counts.active}</span>
       <span class="iter-counter c-done"><span class="iter-counter-glyph">✓</span>${counts.done}</span>
+      ${counts.abandoned ? `<span class="iter-counter"><span class="iter-counter-glyph">×</span>${counts.abandoned}</span>` : ''}
     </div>
-    <div class="track-actions">
-      <button class="iconbtn" title="Open in board" data-act="board">⊞</button>
-      <button class="iconbtn" title="New iteration" data-act="new-iter">+</button>
-      <button class="iconbtn" title="Edit track" data-act="edit">✎</button>
-      <button class="iconbtn" title="Archive track" data-act="archive">⌫</button>
-    </div>
+    ${activeIter ? `<div class="track-card-active mono"><span class="iter-active-badge">HEAD</span> ${escapeHtml(activeIter.id)} · ${escapeHtml(activeIter.title || activeIter.slug || '')}</div>` : ''}
+    <div class="track-card-bar"><i style="width:${doneFrac}%"></i></div>
+    <div class="track-card-foot mono">${totalDone}/${totalTasks} tasks · ${counts.done}/${total} iter</div>
   `;
-  head.addEventListener('click', e => {
+
+  card.addEventListener('click', e => {
     const btn = e.target.closest('button[data-act]');
     if (btn) {
       e.stopPropagation();
       const act = btn.dataset.act;
-      if (act === 'board') {
-        STATE.boardTrack = tr.slug;
-        setTab('iteration');
-        refresh();
-      } else if (act === 'new-iter') openIterForm(tr.slug, null);
+      if (act === 'new-iter') openIterForm(tr.slug, null);
       else if (act === 'edit') openTrackForm(tr.slug);
       else if (act === 'archive') archiveTrack(tr.slug);
       return;
     }
-    // toggle
-    if (STATE.expandedTracks.has(tr.slug)) STATE.expandedTracks.delete(tr.slug);
-    else STATE.expandedTracks.add(tr.slug);
-    renderTracks();
+    viewTrack(tr.slug);
   });
-  sec.appendChild(head);
 
-  if (expanded) {
-    const body = document.createElement('div');
-    body.className = 'track-body';
-    const iters = tr.iterations || [];
-    if (!iters.length) {
-      body.innerHTML = `<div class="iter-empty">no iterations yet. click <b>+</b> on the right.</div>`;
-    } else {
-      for (const it of iters) body.appendChild(renderIterRow(tr, it));
-    }
-    sec.appendChild(body);
-  }
-
-  return sec;
+  return card;
 }
 
-function renderIterRow(tr, it) {
-  const row = document.createElement('div');
-  row.className = `iter-row s-${it.status}`;
-  row.dataset.id = it.id;
+// ─── Roadmap view ──────────────────────────────────────────────────────────
 
-  const isPlanned = it.status === 'planned';
-  row.draggable = isPlanned;
+function viewTrack(slug) {
+  STATE.viewedTrack = slug;
+  STATE.viewedTrackData = null;
+  if (location.hash !== `#track/${slug}`) location.hash = `#track/${slug}`;
+  loadTrackRoadmap();
+}
 
-  const isActive = tr.active === it.id || it.status === 'active';
-  const taskCount = it.task_count || 0;
+function exitTrackView() {
+  STATE.viewedTrack = null;
+  STATE.viewedTrackData = null;
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  renderTracks();
+}
 
-  const isStarted = !!(it.fm?.started || it.started);
-  const actBtns = [];
-  if (isPlanned) actBtns.push(`<button class="iconbtn" data-act="activate" title="Activate">▶</button>`);
-  if (isActive) actBtns.push(`<button class="iconbtn" data-act="board" title="Open in board">⊞</button>`);
-  if (isActive && !isStarted) actBtns.push(`<button class="iconbtn" data-act="start" title="Start iteration: dispatch all todo tasks to their agents">▷</button>`);
-  if (isActive && isStarted) actBtns.push(`<button class="iconbtn" data-act="restart" title="Re-dispatch: queue any new todo tasks added after the first start (force re-run)">↻</button>`);
-  if (isActive) actBtns.push(`<button class="iconbtn" data-act="finalize" title="Finalize iteration: review checklist + merge auto/iter-${escapeHtml(String(it.id))} into a target branch">✓</button>`);
-  actBtns.push(`<button class="iconbtn" data-act="edit" title="Edit">✎</button>`);
-  if (isPlanned && taskCount === 0) actBtns.push(`<button class="iconbtn" data-act="delete" title="Delete">×</button>`);
-  if (it.status !== 'done' && it.status !== 'abandoned') actBtns.push(`<button class="iconbtn" data-act="archive" title="Archive (close as done)">⌫</button>`);
-
-  const started = it.fm?.started || it.started || '';
-  const relTime = relativeDate(started);
-  const doneCount = (typeof it.done_count === 'number') ? it.done_count : null;
-
-  // Title prefers free-form fm.title, falls back to slug derivation
-  const title = it.title || it.fm?.title || '';
-  const sub = title && title !== it.slug ? title : '';
-
-  // Build meta segments (git-log-style: id · started · tasks · relative)
-  const meta = [];
-  if (started) meta.push(`<span title="started">${escapeHtml(started)}</span>`);
-  if (taskCount > 0) {
-    const taskLabel = doneCount != null
-      ? `${doneCount}/${taskCount} done`
-      : `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
-    meta.push(`<span>${taskLabel}</span>`);
-  } else {
-    meta.push(`<span class="muted">no tasks</span>`);
+async function loadTrackRoadmap() {
+  const slug = STATE.viewedTrack;
+  if (!slug) return;
+  try {
+    const r = await api(`/api/track/${encodeURIComponent(slug)}`);
+    STATE.viewedTrackData = r;
+  } catch (e) {
+    toast(`load failed: ${e.message}`, 'error');
+    exitTrackView();
+    return;
   }
-  if (relTime) meta.push(`<span class="muted">${escapeHtml(relTime)}</span>`);
+  renderTrackRoadmap();
+}
 
-  row.innerHTML = `
-    <div class="iter-rail"><span class="iter-bullet">${ITER_GLYPHS[it.status] || '·'}</span></div>
-    <div class="iter-body">
-      <div class="iter-headline">
-        <span class="iter-id">${escapeHtml(it.id)}</span>
-        <span class="iter-slug">${escapeHtml(it.slug)}</span>
-        ${sub ? `<span class="iter-sep">·</span><span class="iter-title">${escapeHtml(sub)}</span>` : ''}
+function renderTrackRoadmap() {
+  const view = document.getElementById('view-tracks');
+  view.innerHTML = '';
+  const page = document.createElement('div');
+  page.className = 'roadmap-page';
+
+  const data = STATE.viewedTrackData;
+  if (!data) {
+    page.innerHTML = `<div class="tracks-empty"><h2>Loading…</h2></div>`;
+    view.appendChild(page);
+    loadTrackRoadmap();
+    return;
+  }
+  const tr = data.track || {};
+  const slug = STATE.viewedTrack;
+  const iters = data.iterations || [];
+  const activeId = data.active;
+  const shipped = tr.fm?.status === 'shipped';
+  const allClosed = iters.length > 0 && iters.every(it => it.status === 'done' || it.status === 'abandoned');
+  const canVerify = allClosed && !shipped;
+
+  const header = document.createElement('div');
+  header.className = 'roadmap-header';
+  header.innerHTML = `
+    <button class="iconbtn roadmap-back" title="Back to tracks">←</button>
+    <div class="roadmap-title-block">
+      <div class="roadmap-slug mono">${escapeHtml(slug)}${shipped ? ' <span class="roadmap-shipped-badge">SHIPPED</span>' : ''}</div>
+      ${tr.fm?.title ? `<div class="roadmap-title">${escapeHtml(tr.fm.title)}</div>` : ''}
+    </div>
+    <div class="roadmap-actions">
+      ${canVerify ? `<button class="btn btn-primary" data-act="verify">✓ Verify track</button>` : ''}
+      ${shipped ? `<button class="btn btn-ghost" data-act="verify">View checklist</button>` : ''}
+      <button class="btn btn-ghost" data-act="new-iter">+ Iteration</button>
+      <button class="btn btn-ghost" data-act="edit">✎ Edit</button>
+      <button class="btn btn-ghost" data-act="archive">⌫ Archive</button>
+    </div>
+  `;
+  header.querySelector('.roadmap-back').addEventListener('click', exitTrackView);
+  header.querySelector('[data-act="new-iter"]').addEventListener('click', () => openIterForm(slug, null));
+  header.querySelector('[data-act="edit"]').addEventListener('click', () => openTrackForm(slug));
+  header.querySelector('[data-act="archive"]').addEventListener('click', () => archiveTrack(slug));
+  const vbtn = header.querySelector('[data-act="verify"]');
+  if (vbtn) vbtn.addEventListener('click', () => openTrackChecklist(slug, { shipped }));
+  page.appendChild(header);
+
+  if (!iters.length) {
+    const empty = document.createElement('div');
+    empty.className = 'tracks-empty';
+    empty.innerHTML = `<h2>No iterations</h2><p>click <span class="cmd">+ Iteration</span> to add the first one</p>`;
+    page.appendChild(empty);
+    view.appendChild(page);
+    return;
+  }
+
+  const rail = document.createElement('div');
+  rail.className = 'roadmap-rail';
+  for (let i = 0; i < iters.length; i++) {
+    rail.appendChild(renderRoadmapNode(slug, iters[i], i === 0, i === iters.length - 1, activeId));
+  }
+  rail.addEventListener('wheel', e => {
+    if (e.shiftKey) return;
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    if (e.target.closest('.rm-tasks')) {
+      const ul = e.target.closest('.rm-tasks');
+      if (ul.scrollHeight > ul.clientHeight) return;
+    }
+    rail.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+  page.appendChild(rail);
+
+  view.appendChild(page);
+}
+
+function renderRoadmapNode(trackSlug, it, isFirst, isLast, activeId) {
+  const node = document.createElement('div');
+  const isActive = (it.id === activeId) || it.status === 'active';
+  node.className = `roadmap-node s-${it.status}` + (isActive ? ' is-active' : '');
+
+  const tasks = it.tasks || [];
+  const doneCount = tasks.filter(t => t.status === 'done').length;
+  const openTasks = tasks.filter(t => t.status !== 'done');
+  const onlyUserTasks = openTasks.length > 0 && openTasks.every(t => (t.assignee || 'user') === 'user');
+  const lock = it.iterate_lock || null;
+  const startDisabled = !tasks.length || onlyUserTasks || !!lock;
+  const startTitle = !tasks.length
+    ? 'No tasks in iteration'
+    : lock
+      ? `/iterate already running (started ${lock.at}) — close that terminal or unlock`
+      : onlyUserTasks
+        ? 'All open tasks are assigned to user — nothing to orchestrate'
+        : `Open terminal and run /iterate ${trackSlug} ${it.id}`;
+  const taskItems = tasks.length
+    ? tasks.map(t => `
+        <li class="rm-task s-${t.status}" data-task="${escapeHtml(t.id)}" title="${escapeHtml(t.title || '')}">
+          <span class="dot s-${t.status}${t.status === 'in-progress' ? ' pulse' : ''}"></span>
+          <span class="rm-task-id mono">${escapeHtml(t.id)}</span>
+          <span class="rm-task-title">${escapeHtml(t.title || '')}</span>
+        </li>`).join('')
+    : '<li class="rm-task-empty muted">no tasks</li>';
+
+  node.innerHTML = `
+    <div class="rm-line ${isFirst ? 'no-left' : ''} ${isLast ? 'no-right' : ''}">
+      <span class="rm-bullet"></span>
+    </div>
+    <div class="rm-card">
+      <div class="rm-head">
+        <span class="rm-id mono">${escapeHtml(it.id)}</span>
+        <span class="rm-slug mono">${escapeHtml(it.slug)}</span>
         ${isActive ? `<span class="iter-active-badge">HEAD</span>` : ''}
         ${it.status === 'abandoned' ? `<span class="iter-tag-abandoned">abandoned</span>` : ''}
+        ${lock ? `<span class="rm-lock-badge" title="iterate terminal running since ${escapeHtml(lock.at)}">⚙ LOCKED</span>` : ''}
       </div>
-      <div class="iter-meta">${meta.join('<span class="iter-meta-sep">·</span>')}</div>
+      ${it.title && it.title !== it.slug ? `<div class="rm-title">${escapeHtml(it.title)}</div>` : ''}
+      <div class="rm-meta mono">${doneCount}/${tasks.length} done · ${escapeHtml(it.status)}</div>
+      <ul class="rm-tasks">${taskItems}</ul>
+      ${isActive ? `<button class="rm-start-circle" data-act="iterate"${startDisabled ? ' disabled' : ''} title="${escapeHtml(startTitle)}">▶</button>` : ''}
+      <div class="rm-card-actions">
+        ${it.status === 'planned' ? `<button class="iconbtn" data-act="activate" title="Activate">▶</button>` : ''}
+        ${lock ? `<button class="iconbtn" data-act="unlock" title="Clear .iterate.lock (use if the terminal crashed)">⊘</button>` : ''}
+        <button class="iconbtn" data-act="edit" title="Edit">✎</button>
+        ${(it.status !== 'done' && it.status !== 'abandoned') ? `<button class="iconbtn" data-act="archive" title="Close as done">✓</button>` : ''}
+        ${it.status === 'planned' && tasks.length === 0 ? `<button class="iconbtn" data-act="delete" title="Delete">×</button>` : ''}
+      </div>
     </div>
-    <div class="iter-actions">${actBtns.join('')}</div>
   `;
 
-  if (isPlanned) {
-    row.addEventListener('dragstart', e => {
-      e.dataTransfer.setData('text/plain', JSON.stringify({ track: tr.slug, id: it.id }));
-      e.dataTransfer.effectAllowed = 'move';
-      row.classList.add('dragging');
-    });
-    row.addEventListener('dragend', () => row.classList.remove('dragging'));
-  }
-  row.addEventListener('dragover', e => {
-    if (!isPlanned) return;
-    e.preventDefault();
-    row.classList.add('drop-target');
-  });
-  row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
-  row.addEventListener('drop', async e => {
-    e.preventDefault();
-    row.classList.remove('drop-target');
-    if (!isPlanned) return;
-    let data;
-    try { data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}'); } catch { return; }
-    if (data.track !== tr.slug || !data.id || data.id === it.id) return;
-    await reorderIters(tr.slug, data.id, it.id);
-  });
-
-  row.addEventListener('click', e => {
+  node.addEventListener('click', e => {
+    const taskEl = e.target.closest('.rm-task[data-task]');
+    if (taskEl) {
+      e.stopPropagation();
+      openModal(taskEl.dataset.task);
+      return;
+    }
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     e.stopPropagation();
     const act = btn.dataset.act;
-    if (act === 'activate') activateIter(tr.slug, it.id);
-    else if (act === 'edit') openIterForm(tr.slug, it.id);
-    else if (act === 'archive') archiveIter(tr.slug, it.id);
-    else if (act === 'start') startIter(tr.slug, it.id, false);
-    else if (act === 'restart') startIter(tr.slug, it.id, true);
-    else if (act === 'finalize') openFinalizeModal(tr.slug, it.id);
-    else if (act === 'delete') deleteIter(tr.slug, it.id);
-    else if (act === 'board') {
-      STATE.boardTrack = tr.slug;
-      setTab('iteration');
-      refresh();
-    }
+    if (act === 'activate') activateIter(trackSlug, it.id);
+    else if (act === 'edit') openIterForm(trackSlug, it.id);
+    else if (act === 'archive') archiveIter(trackSlug, it.id);
+    else if (act === 'delete') deleteIter(trackSlug, it.id);
+    else if (act === 'iterate') iterateInTerminal(trackSlug, it.id);
+    else if (act === 'unlock') unlockIteration(trackSlug, it.id);
   });
 
-  return row;
+  return node;
 }
+
+// Per-iteration debounce: even though the server holds an .iterate.lock, the
+// UI can race ahead before SSE refreshes the lock state, so keep a short
+// in-memory window per iter.
+const ITERATE_DEBOUNCE = new Map();
+const ITERATE_DEBOUNCE_MS = 10_000;
+
+async function iterateInTerminal(track, id) {
+  const key = `${track}/${id}`;
+  const last = ITERATE_DEBOUNCE.get(key) || 0;
+  if (Date.now() - last < ITERATE_DEBOUNCE_MS) {
+    toast('already launching — wait a moment', 'warn');
+    return;
+  }
+  ITERATE_DEBOUNCE.set(key, Date.now());
+  try {
+    await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/iterate`, { method: 'POST' });
+    toast(`terminal launched · /iterate ${track} ${id}`, 'success');
+    await refresh();
+  } catch (e) {
+    ITERATE_DEBOUNCE.delete(key);
+    toast(`launch failed: ${e.message}`, 'error');
+  }
+}
+
+async function unlockIteration(track, id) {
+  if (!await confirmModal({
+    title: 'Unlock iteration',
+    message: `Clear the <code>.iterate.lock</code> for iter <b>${escapeHtml(id)}</b>?<br><span style="color:var(--fg-2);font-size:11px">Use only if the previous /iterate terminal crashed. If it's still running, you'll get a double-orchestrator race.</span>`,
+    confirmText: 'Unlock',
+    danger: true,
+  })) return;
+  try {
+    await api(`/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/iterate-lock`, { method: 'DELETE' });
+    toast('unlocked', 'success');
+    await refresh();
+  } catch (e) { toast(`unlock failed: ${e.message}`, 'error'); }
+}
+
 
 function countIters(iters) {
   const c = { planned: 0, active: 0, done: 0, abandoned: 0 };
@@ -596,6 +699,65 @@ function checklistToMd(nodes) {
   return lines.join('\n');
 }
 
+async function openTrackChecklist(slug, opts = {}) {
+  const shipped = !!opts.shipped;
+  let r;
+  try {
+    r = await api(`/api/track/${encodeURIComponent(slug)}/checklist`);
+  } catch (e) {
+    toast(`load failed: ${e.message}`, 'error');
+    return;
+  }
+  let nodes = parseChecklistMd(r.content || '');
+  const totalItems = () => nodes.filter(n => n.kind === 'item').length;
+  const checkedItems = () => nodes.filter(n => n.kind === 'item' && n.checked).length;
+
+  const renderBody = () => `
+    <div class="ck-progress">${checkedItems()} / ${totalItems()} verified${shipped ? ' · shipped' : ''}</div>
+    <div class="ck-list">${renderChecklistHtml(nodes)}</div>
+  `;
+
+  openFormModal(`Verify track · ${slug}`, renderBody(), async () => {
+    const md = checklistToMd(nodes);
+    try {
+      await api(`/api/track/${encodeURIComponent(slug)}/checklist`, {
+        method: 'PUT', body: JSON.stringify({ content: md }),
+      });
+    } catch (e) { toast(`save failed: ${e.message}`, 'error'); return; }
+    if (shipped) { toast('saved', 'success'); closeFormModal(); return; }
+    if (totalItems() > 0 && checkedItems() === totalItems()) {
+      closeFormModal();
+      const yes = await confirmModal({
+        title: 'Ship track',
+        message: `Every item checked. Mark track <b>${escapeHtml(slug)}</b> as <b>shipped</b>?`,
+        confirmText: 'Ship',
+      });
+      if (yes) {
+        try {
+          await api(`/api/track/${encodeURIComponent(slug)}/ship`, { method: 'POST', body: JSON.stringify({}) });
+          toast(`track ${slug} shipped`, 'success');
+          await refresh();
+          if (STATE.viewedTrack === slug) await loadTrackRoadmap();
+        } catch (e) { toast(`ship failed: ${e.message}`, 'error'); }
+      }
+    } else {
+      toast('checklist saved', 'success');
+      closeFormModal();
+    }
+  }, { size: 'lg', confirmText: shipped ? 'Save' : 'Save progress' });
+
+  const body = document.getElementById('form-body');
+  body.addEventListener('change', (e) => {
+    const cb = e.target.closest('input[type=checkbox][data-idx]');
+    if (!cb) return;
+    const idx = Number(cb.dataset.idx);
+    if (Number.isNaN(idx) || !nodes[idx]) return;
+    nodes[idx].checked = cb.checked;
+    const prog = body.querySelector('.ck-progress');
+    if (prog) prog.textContent = `${checkedItems()} / ${totalItems()} verified${shipped ? ' · shipped' : ''}`;
+  });
+}
+
 async function openIterChecklist(track, id) {
   let r;
   try {
@@ -710,8 +872,12 @@ function bindFormModal() {
 }
 
 window.renderTracks = renderTracks;
+window.viewTrack = viewTrack;
+window.exitTrackView = exitTrackView;
+window.loadTrackRoadmap = loadTrackRoadmap;
 window.bindFormModal = bindFormModal;
 window.openTrackForm = openTrackForm;
 window.openIterForm = openIterForm;
 window.openFinalizeModal = openFinalizeModal;
+window.openTrackChecklist = openTrackChecklist;
 window.closeFormModal = closeFormModal;

@@ -37,7 +37,6 @@
       <button class="tab" data-tab="tracks">Tracks<span class="badge" id="tracks-badge"></span></button>
       <button class="tab" data-tab="agents">Agents<span class="badge" id="agents-badge"></span></button>
       <button class="tab" data-tab="runs">Runs<span class="badge" id="runs-badge"></span></button>
-      <button class="tab" data-tab="stats">Stats<span class="badge" id="stats-badge"></span></button>
     </nav>
   </div>
 
@@ -48,10 +47,6 @@
       <input type="text" id="search-input" placeholder="Search">
       <span class="kbd">/</span>
     </label>
-    <button class="iconbtn" id="queue-btn" title="queue (q)">
-      <span id="icon-queue"></span>
-      <span class="qcount" id="queue-count" hidden></span>
-    </button>
     <button class="iconbtn" id="density-toggle" title="toggle density">
       <span id="icon-density"></span>
     </button>
@@ -78,7 +73,6 @@
 <main class="workspace view" id="view-tracks"></main>
 <main class="workspace view" id="view-agents"></main>
 <main class="workspace view" id="view-runs"></main>
-<main class="workspace view" id="view-stats"></main>
 
 <!-- Task detail modal -->
 <div class="modal-bg" id="modal-bg">
@@ -109,6 +103,9 @@
 
           <div class="task-section-label">Subtasks</div>
           <div id="m-subtasks"></div>
+
+          <div class="task-section-label" id="m-checklist-label" style="display:none">Checklist</div>
+          <div class="task-md" id="m-checklist" style="display:none"></div>
 
           <div class="task-section-label">Notes</div>
           <div class="task-md" id="m-notes"></div>
@@ -142,8 +139,6 @@
         <button class="btn btn-danger" id="m-delete" style="display:none">Delete</button>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-ghost" id="m-verify-btn" style="display:none">✓ Verify</button>
-        <button class="btn btn-ghost" id="m-dispatch">▶ Start agent</button>
         <button class="btn btn-ghost" id="m-cancel">Close</button>
         <button class="btn btn-primary" id="m-save">Save</button>
       </div>
@@ -165,16 +160,6 @@
     </div>
   </div>
 </div>
-
-<!-- Queue side-sheet -->
-<aside class="sidesheet" id="queue-sheet" aria-hidden="true">
-  <div class="sheet-head">
-    <span class="sheet-title">Queue</span>
-    <span class="sheet-sub" id="queue-sheet-sub"></span>
-    <div class="modal-close"><button class="iconbtn" id="queue-sheet-close" aria-label="close">×</button></div>
-  </div>
-  <div class="sheet-body" id="queue-sheet-body"></div>
-</aside>
 
 <!-- New task form modal -->
 <div class="modal-bg" id="newtask-bg">
@@ -239,7 +224,6 @@
 <script src="/static/board.js"></script>
 <script src="/static/tracks.js"></script>
 <script src="/static/agents.js"></script>
-<script src="/static/stats.js"></script>
 <script src="/static/runs.js"></script>
 <script src="/static/modal.js"></script>
 <script src="/static/app.js"></script>

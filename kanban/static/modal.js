@@ -3,9 +3,6 @@
 let MODAL_TASK = null;
 let MODAL_DEPS = [];
 let MODAL_ATTACHMENTS = [];
-let MODAL_VERIFY_OPEN = false;
-let MODAL_VERIFY_ITEMS = [];
-let MODAL_VERIFY_SUMMARY = '';
 let MODAL_DELETE_CONFIRM = false;
 
 async function openModal(id, opts = {}) {
@@ -58,24 +55,20 @@ async function openModal(id, opts = {}) {
   bindSection('m-acceptance', 'Acceptance criteria', t._acceptance);
   bindSection('m-verify',     'How to verify',       t._verify);
   bindSection('m-notes',      'Notes',               t._notes);
+  bindSection('m-checklist',  'Checklist',           t._checklist);
+  // Checklist is opt-in: only show when the task body actually has the section.
+  const ckLabel = document.getElementById('m-checklist-label');
+  const ckEl = document.getElementById('m-checklist');
+  const hasCk = !!(t._checklist && t._checklist.trim());
+  if (ckLabel) ckLabel.style.display = hasCk ? '' : 'none';
+  if (ckEl) ckEl.style.display = hasCk ? '' : 'none';
   renderSubtasks(t._subtasks || []);
 
   // attachments
   MODAL_ATTACHMENTS = [...(t._attachments || [])];
   renderAttachments();
 
-  // dispatch button enabled state — disabled for non-todo, user-assigned, or verifying
-  const dispatchBtn = document.getElementById('m-dispatch');
-  if (dispatchBtn) dispatchBtn.disabled = !(t.status === 'todo' && t.assignee !== 'user');
-
-  // Verify panel: auto-open when verifying. Manual toggle button hidden — panel
-  // sits at the top of modal-body before any task info.
-  const verifyBtn = document.getElementById('m-verify-btn');
-  if (verifyBtn) verifyBtn.style.display = 'none';
-  MODAL_VERIFY_OPEN = t.status === 'verifying' || !!opts.verify;
-  MODAL_VERIFY_ITEMS = [];
-  MODAL_VERIFY_SUMMARY = '';
-  renderVerifyPanel();
+  // Per-task dispatch / verify flow is gone — agents drive status via /iterate.
 
   // reset delete confirm
   MODAL_DELETE_CONFIRM = false;
@@ -110,6 +103,7 @@ const SECTION_HEADINGS = {
   'm-acceptance': 'Acceptance criteria',
   'm-verify':     'How to verify',
   'm-notes':      'Notes',
+  'm-checklist':  'Checklist',
 };
 
 function renderSectionView(el, content) {
@@ -386,73 +380,9 @@ function bindAttachmentsDnD() {
 
 // ─── Verification panel ─────────────────────────────────────────────────────
 
-function toggleVerify(on) {
-  MODAL_VERIFY_OPEN = on != null ? !!on : !MODAL_VERIFY_OPEN;
-  renderVerifyPanel();
-}
-
-function renderVerifyPanel() {
-  const panel = document.getElementById('m-verify-panel');
-  if (!panel) return;
-  panel.classList.toggle('open', MODAL_VERIFY_OPEN);
-  if (!MODAL_VERIFY_OPEN) { panel.innerHTML = ''; return; }
-
-  const verifyText = (MODAL_TASK._verify || '').trim();
-  const howHtml = verifyText
-    ? `<div class="vhow"><div class="vhow-h">How to verify</div><div class="vhow-body task-md">${renderMarkdown(verifyText)}</div></div>`
-    : `<div class="vhow vhow-missing">⚠ "How to verify" пуст — агент должен описать конкретные шаги проверки в этой секции таска</div>`;
-
-  const summary = MODAL_VERIFY_SUMMARY || '';
-  const declineEnabled = summary.trim().length > 0;
-
-  panel.innerHTML = `
-    <div class="vhead">Verify — attempt ${(MODAL_TASK.attempts || 0) + 1}</div>
-    ${howHtml}
-    <div class="vrow vrow-summary">
-      <textarea id="vsummary" class="vnote" placeholder="что не так (обязательно для Decline; для Approve — опционально, попадёт в коммит)">${escapeHtml(summary)}</textarea>
-    </div>
-    <div class="vactions">
-      <button class="vapprove">Approve · commit + push + done</button>
-      <button class="vreject" ${declineEnabled ? '' : 'disabled'} title="${declineEnabled ? '' : 'нужна заметка что не так'}">Decline · re-queue agent (attempt+1)</button>
-    </div>
-  `;
-
-  const ta = panel.querySelector('#vsummary');
-  if (ta) {
-    ta.addEventListener('input', () => {
-      MODAL_VERIFY_SUMMARY = ta.value;
-      const declineBtn = panel.querySelector('.vreject');
-      if (declineBtn) {
-        const ok = ta.value.trim().length > 0;
-        declineBtn.disabled = !ok;
-        declineBtn.title = ok ? '' : 'нужна заметка что не так';
-      }
-    });
-  }
-  panel.querySelector('.vapprove')?.addEventListener('click', () => submitVerify('approve'));
-  panel.querySelector('.vreject')?.addEventListener('click', () => submitVerify('reject'));
-}
-
-async function submitVerify(decision) {
-  if (!MODAL_TASK) return;
-  const summary = (document.getElementById('vsummary')?.value || '').trim();
-  if (decision === 'reject' && !summary) {
-    toast('Decline требует заметку: что именно не так', 'error');
-    return;
-  }
-  try {
-    const r = await api(`/api/task/${MODAL_TASK.id}/verify`, {
-      method: 'POST',
-      body: JSON.stringify({ decision, summary }),
-    });
-    if (r.result === 'done') toast(`${MODAL_TASK.id} ✓ done · commit ${r.commit?.slice(0, 7) || ''}`, 'success');
-    else if (r.result === 'committing') toast(`${MODAL_TASK.id} → commit + push в фоне…`);
-    else if (r.result === 'rework') toast(`${MODAL_TASK.id} → rework (attempt ${r.attempts})`, 'warn');
-    else toast(`${MODAL_TASK.id} ${r.result}`);
-    closeModal();
-    await refresh();
-  } catch (e) { toast(`verify failed: ${e.message}`, 'error'); }
-}
+// Verify panel removed: per-task approve/reject was a legacy concept;
+// the orchestrator owns commits and the user signs off at iteration finalize
+// and track ship time.
 
 // ─── Footer (delete confirm) ────────────────────────────────────────────────
 
@@ -498,9 +428,6 @@ function closeModal() {
   MODAL_TASK = null;
   MODAL_DEPS = [];
   MODAL_ATTACHMENTS = [];
-  MODAL_VERIFY_OPEN = false;
-  MODAL_VERIFY_ITEMS = [];
-  MODAL_VERIFY_SUMMARY = '';
   MODAL_DELETE_CONFIRM = false;
 }
 
@@ -529,12 +456,6 @@ function bindModal() {
   document.getElementById('m-close').addEventListener('click', closeModal);
   document.getElementById('m-cancel').addEventListener('click', closeModal);
   document.getElementById('m-save').addEventListener('click', saveModal);
-  document.getElementById('m-dispatch').addEventListener('click', async () => {
-    if (!MODAL_TASK) return;
-    closeModal();
-    await dispatchTask(MODAL_TASK.id);
-  });
-  document.getElementById('m-verify-btn').addEventListener('click', () => toggleVerify());
   document.getElementById('modal-bg').addEventListener('click', e => {
     if (e.target.id === 'modal-bg') closeModal();
   });

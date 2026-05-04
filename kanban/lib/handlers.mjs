@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   VALID_STATUSES, ALLOWED_TRANSITIONS, ITER_STATUSES, transitionsJson,
   ROOT, WORKFLOW, TRACKS_DIR, ARCHIVE_DIR, AGENTS_DIR,
@@ -165,11 +166,26 @@ export function handleTracks(res) {
 export function handleTrack(res, slug) {
   const t = readTrack(slug);
   if (!t) return sendJson(res, 404, { error: 'track not found' });
-  const iters = listIterations(slug).map(it => ({
-    id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
-    fm: it.fm, body: it.body,
-    task_count: listTasksInIteration(slug, it.id).length,
-  }));
+  const iters = listIterations(slug).map(it => {
+    const tasks = listTasksInIteration(slug, it.id).map(x => ({
+      id: x.id,
+      title: x.title || '',
+      status: x.status,
+      assignee: x.assignee || '',
+      attempts: x.attempts || 0,
+      deps: x.deps || [],
+    }));
+    const lock = readIterLock(it);
+    const lockFresh = isLockFresh(lock);
+    return {
+      id: it.id, slug: it.slug, status: it.status, title: it.fm.title || '',
+      fm: it.fm, body: it.body,
+      task_count: tasks.length,
+      done_count: tasks.filter(x => x.status === 'done').length,
+      tasks,
+      iterate_lock: lockFresh ? lock : null,
+    };
+  });
   sendJson(res, 200, envelope({
     track: { slug, fm: t.fm, body: t.body, dir: rel(t.dir) },
     active: trackActive(slug),
@@ -203,7 +219,7 @@ export async function handleTrackUpdate(req, res, slug) {
   const fm = { ...t.fm };
   if ('title' in p) fm.title = String(p.title || '');
   if ('status' in p) {
-    if (!['active', 'archived'].includes(p.status)) return sendJson(res, 400, { error: 'status: active|archived' });
+    if (!['active', 'archived', 'shipped'].includes(p.status)) return sendJson(res, 400, { error: 'status: active|archived|shipped' });
     fm.status = p.status;
   }
   const newBody = 'body' in p ? String(p.body || '') : t.body;
@@ -427,6 +443,7 @@ export function handleTask(res, tid, query = {}) {
   const acceptance = extractSection(body, 'Acceptance criteria');
   const verify     = extractSection(body, 'How to verify');
   const notes      = extractSection(body, 'Notes');
+  const checklist  = extractSection(body, 'Checklist');
   const subtasks = parseChecklist(body, 'Subtasks');
   const criteria = parseChecklist(body, 'Acceptance criteria');
 
@@ -474,7 +491,7 @@ export function handleTask(res, tid, query = {}) {
     ...fm, _body: body, _path: rel(p),
     _attachments: listAttachments(tid) || [],
     _subtasks: subtasks, _criteria: criteria,
-    _goal: goal, _context: context, _acceptance: acceptance, _verify: verify, _notes: notes,
+    _goal: goal, _context: context, _acceptance: acceptance, _verify: verify, _notes: notes, _checklist: checklist,
     ...(totals ? { _stats: totals } : {}),
   });
 }
@@ -778,6 +795,106 @@ export async function handleIterStart(req, res, trackSlug, iterId) {
 
 export function handleQueueStatus(res) {
   sendJson(res, 200, { size: queueCount(), items: queueItems() });
+}
+
+// POST /api/track/:slug/iteration/:id/iterate
+// Spawns a detached terminal in the project root running `claude /iterate <track> <id>`.
+// Windows-only for now: prefers Windows Terminal (wt.exe) and falls back to cmd.exe.
+// Iter-level lock: while a /iterate terminal is alive on this iteration, the
+// kanban refuses to spawn a second one. The agent itself can also choose to
+// honor / clear the lock, but the file is the single source of truth.
+//
+// Stored at <iter.dir>/.iterate.lock. If older than LOCK_STALE_MS, treated
+// as orphaned (a previous terminal crashed) and silently overwritten.
+const LOCK_STALE_MS = 6 * 60 * 60 * 1000; // 6h
+
+function lockFilePath(iter) { return path.join(iter.dir, '.iterate.lock'); }
+
+function readIterLock(iter) {
+  try {
+    const raw = readText(lockFilePath(iter));
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function isLockFresh(lock) {
+  if (!lock || !lock.at) return false;
+  const t = Date.parse(lock.at);
+  if (!t) return false;
+  return (Date.now() - t) < LOCK_STALE_MS;
+}
+
+function writeIterLock(iter) {
+  const data = { at: new Date().toISOString(), pid: process.pid };
+  fs.writeFileSync(lockFilePath(iter), JSON.stringify(data, null, 2), 'utf-8');
+  return data;
+}
+
+export function handleIterIterate(res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  if (process.platform !== 'win32') {
+    return sendJson(res, 501, { error: `terminal spawn not implemented for ${process.platform}` });
+  }
+
+  const existing = readIterLock(it);
+  if (isLockFresh(existing)) {
+    return sendJson(res, 409, {
+      error: `/iterate already running on this iteration (started ${existing.at})`,
+      lock: existing,
+      hint: 'close that terminal first, or delete .iterate.lock if it crashed',
+    });
+  }
+
+  // Precheck: claude CLI must be on PATH; otherwise the new terminal opens
+  // straight into "command not found" with no signal back to the user.
+  const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['claude'], { encoding: 'utf-8' });
+  if (probe.status !== 0) {
+    return sendJson(res, 424, {
+      error: `'claude' CLI not found on PATH — install Claude Code and reopen the kanban server`,
+    });
+  }
+
+  const slashCmd = `/iterate ${trackSlug} ${iterId}`;
+  const inner = `claude "${slashCmd}"`;
+  const title = `iter ${iterId} · ${trackSlug}`;
+  try {
+    const args = [
+      '-d', ROOT,
+      '--title', title,
+      'cmd.exe', '/k', inner,
+    ];
+    const child = spawn('wt.exe', args, {
+      cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: false,
+    });
+    child.on('error', (e) => {
+      logger.warn('kanban', `wt.exe spawn failed (${e.message}), falling back to cmd start`);
+      try {
+        spawn('cmd.exe', ['/c', 'start', '""', '/D', ROOT, 'cmd.exe', '/k', inner], {
+          cwd: ROOT, detached: true, stdio: 'ignore', shell: false, windowsHide: false,
+        }).unref();
+      } catch (e2) {
+        logger.error('kanban', `cmd start fallback failed: ${e2.message}`);
+      }
+    });
+    child.unref();
+  } catch (e) {
+    logger.error('kanban', `iterate spawn failed: ${e.message}`);
+    return sendJson(res, 500, { error: `spawn failed: ${e.message}` });
+  }
+
+  const lock = writeIterLock(it);
+  sendJson(res, 200, { ok: true, command: inner, cwd: ROOT, lock });
+}
+
+// DELETE /api/track/:slug/iteration/:id/iterate-lock
+// Manual unlock — used when a /iterate terminal crashed without clearing
+// the lock and the user wants to reopen the iteration.
+export function handleIterIterateUnlock(res, trackSlug, iterId) {
+  const it = findIteration(trackSlug, iterId);
+  if (!it) return sendJson(res, 404, { error: 'iteration not found' });
+  try { fs.rmSync(lockFilePath(it), { force: true }); } catch {}
+  sendJson(res, 200, { ok: true });
 }
 
 // ---------- Verification ----------
@@ -1565,6 +1682,9 @@ export async function handleIterationSubmit(req, res) {
         if (cur === iterId) fs.rmSync(activeFile, { force: true });
       }
     } catch {}
+    // The /iterate terminal that owned this iteration is now finished — drop
+    // its lock so the next /iterate (or another terminal) can claim the iter.
+    try { fs.rmSync(lockFilePath(iter), { force: true }); } catch {}
   }
 
   broadcastChange('change', { kind: 'orch_iter_submit', track, id: iterId, status, commit: git.commit });
@@ -1644,6 +1764,128 @@ export function handleIterationRuns(res) {
 
 // PUT /api/track/:slug/iteration/:id/checklist  body: { content }
 // Persists the user's check-off state. The frontend posts the whole markdown.
+// GET /api/track/:slug/checklist
+// Returns the track-level verification checklist. If a stored CHECKLIST.md
+// exists in the track dir, returns it. Otherwise aggregates per-iteration
+// CHECKLIST.md files into a fresh draft.
+export function handleTrackChecklistRead(res, trackSlug) {
+  const tdir = trackDir(trackSlug);
+  if (!exists(tdir)) return sendJson(res, 404, { error: 'track not found' });
+  const f = path.join(tdir, 'CHECKLIST.md');
+  if (exists(f)) return sendJson(res, 200, { content: readText(f), path: rel(f), stored: true });
+
+  const t = readTrack(trackSlug);
+  const iters = listIterations(trackSlug);
+  const lines = [];
+  lines.push(`# Track ${trackSlug} — verification checklist`);
+  lines.push('');
+  if (t?.fm?.title && t.fm.title !== trackSlug) lines.push(`Title: ${t.fm.title}`);
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push('');
+  lines.push('Tick each item after manually testing the feature in the running app.');
+  lines.push('');
+  let any = false;
+  for (const it of iters) {
+    if (it.status === 'abandoned') continue;
+    const cf = path.join(it.dir, 'CHECKLIST.md');
+    lines.push(`## iter ${it.id} — ${it.fm?.title || it.slug}`);
+    lines.push('');
+    if (exists(cf)) {
+      const txt = readText(cf);
+      const items = [];
+      for (const raw of txt.split('\n')) {
+        const m = /^([-*])\s+\[( |x|X)\]\s+(.+?)\s*$/.exec(raw);
+        if (m) items.push(m[3].trim());
+      }
+      const seen = new Set();
+      for (const it2 of items) {
+        if (seen.has(it2)) continue;
+        seen.add(it2);
+        lines.push(`- [ ] ${it2}`);
+        any = true;
+      }
+      if (!items.length) lines.push('- [ ] (no manual steps recorded for this iteration)');
+    } else {
+      const tasks = listTasksInIteration(trackSlug, it.id);
+      if (!tasks.length) {
+        lines.push('- [ ] (iteration has no tasks)');
+      } else {
+        for (const t2 of tasks) {
+          if (t2.status !== 'done') continue;
+          const ver = (t2._verify || '').trim();
+          if (ver) {
+            for (const raw of ver.split('\n')) {
+              const line = raw.replace(/^[-*]\s*\[[ xX]\]\s*/, '').trim();
+              if (line) { lines.push(`- [ ] ${line}`); any = true; }
+            }
+          } else {
+            lines.push(`- [ ] ${t2.id} ${t2.title || ''} — manually verify`);
+            any = true;
+          }
+        }
+      }
+    }
+    lines.push('');
+  }
+  if (!any) lines.push('_(no verifiable items yet — close iterations first)_');
+  return sendJson(res, 200, { content: lines.join('\n'), path: rel(f), stored: false });
+}
+
+// PUT /api/track/:slug/checklist  body: { content }
+export async function handleTrackChecklistWrite(req, res, trackSlug) {
+  const tdir = trackDir(trackSlug);
+  if (!exists(tdir)) return sendJson(res, 404, { error: 'track not found' });
+  let payload; try { payload = await readBody(req); }
+  catch (e) { return sendJson(res, 400, { error: `bad json: ${e.message}` }); }
+  const content = String(payload.content || '');
+  if (!content) return sendJson(res, 400, { error: 'content required' });
+  const f = path.join(tdir, 'CHECKLIST.md');
+  fs.writeFileSync(f, content, 'utf-8');
+  return sendJson(res, 200, { ok: true, path: rel(f) });
+}
+
+// POST /api/track/:slug/ship  body: { ack_unchecked?: boolean }
+// Marks the track as user-verified and shipped. Requires every checklist item
+// ticked unless `ack_unchecked: true`. Sets fm.status = 'shipped' + shipped_at.
+export async function handleTrackShip(req, res, trackSlug) {
+  const t = readTrack(trackSlug);
+  if (!t) return sendJson(res, 404, { error: 'track not found' });
+  let payload = {}; try { payload = await readBody(req); } catch {}
+  const ack = !!payload.ack_unchecked;
+
+  const cf = path.join(trackDir(trackSlug), 'CHECKLIST.md');
+  if (!exists(cf) && !ack) {
+    return sendJson(res, 409, { error: 'no stored checklist — open Verify track and save first, or pass ack_unchecked:true' });
+  }
+  if (exists(cf) && !ack) {
+    const txt = readText(cf);
+    let total = 0, done = 0;
+    for (const raw of txt.split('\n')) {
+      const m = /^([-*])\s+\[( |x|X)\]\s+/.exec(raw);
+      if (!m) continue;
+      total++;
+      if (m[2].toLowerCase() === 'x') done++;
+    }
+    if (total > 0 && done < total) {
+      return sendJson(res, 409, { error: `${done}/${total} checked — pass ack_unchecked:true to ship anyway` });
+    }
+  }
+
+  const iters = listIterations(trackSlug);
+  const open = iters.filter(it => it.status === 'planned' || it.status === 'active');
+  if (open.length && !ack) {
+    return sendJson(res, 409, {
+      error: 'open iterations remain',
+      open: open.map(it => ({ id: it.id, status: it.status })),
+      hint: 'close them or pass ack_unchecked:true',
+    });
+  }
+
+  const fm = { ...t.fm, status: 'shipped', shipped_at: new Date().toISOString() };
+  writeTrackReadme(trackSlug, fm, t.body);
+  return sendJson(res, 200, { ok: true, slug: trackSlug, status: 'shipped', shipped_at: fm.shipped_at });
+}
+
 export async function handleIterChecklistWrite(req, res, trackSlug, iterId) {
   const dir = path.join(TRACKS_DIR, trackSlug, 'iterations');
   if (!exists(dir)) return sendJson(res, 404, { error: 'track has no iterations' });

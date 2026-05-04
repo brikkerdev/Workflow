@@ -22,19 +22,16 @@ export const AGENTS_DIR = path.join(ROOT, '.claude', 'agents');
 export const STATIC_DIR = path.resolve(__dirname, '..');
 
 // Task lifecycle (one path now — auto_verify just changes who approves):
-//   todo -> queued -> in-progress -> verifying -> done
-// auto_verify=true tasks land at verifying via workflow_submit_for_verify
-// and the server auto-approves immediately. Manual tasks wait for user review.
-export const VALID_STATUSES = [
-  'todo', 'queued', 'in-progress', 'verifying', 'done',
-];
+// Three states. The orchestrator (/iterate) flips todo → done atomically
+// when it commits the iteration. `in-progress` exists so the user can mark
+// what they are personally working on (user-assignee tasks); the orchestrator
+// never sets it.
+export const VALID_STATUSES = ['todo', 'in-progress', 'done'];
 
 export const ALLOWED_TRANSITIONS = {
-  'todo':        new Set(['queued', 'in-progress']),
-  'queued':      new Set(['in-progress', 'todo']),
-  'in-progress': new Set(['verifying', 'queued', 'todo']),
-  'verifying':   new Set(['in-progress', 'queued', 'done', 'todo']),
-  'done':        new Set(['todo']),
+  'todo':        new Set(['in-progress', 'done']),
+  'in-progress': new Set(['todo', 'done']),
+  'done':        new Set(['todo', 'in-progress']),
 };
 
 // Iteration lifecycle (stubs are valid):

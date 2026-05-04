@@ -271,6 +271,20 @@ tools.push(
       api('POST', `/api/task/${encodeURIComponent(task_id)}/done`, { summary }),
   },
   {
+    name: 'workflow_iteration_activate',
+    description: 'Activate a planned iteration in a track (sets it as the track\'s ACTIVE pointer; the previous active iteration drops out). Use this when chaining /iterate across iterations of the same track without leaving the orchestrator session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        track: { type: 'string' },
+        id: { type: 'string', description: 'Planned iteration id like "002".' },
+      },
+      required: ['track', 'id'],
+    },
+    handler: async ({ track, id }) =>
+      api('POST', `/api/track/${encodeURIComponent(track)}/iteration/${encodeURIComponent(id)}/activate`),
+  },
+  {
     name: 'workflow_iteration_submit',
     description: 'Final step of /iterate: ONE commit covering every done task in this iteration (their expected_files + task .md files + iteration README with status flipped). Bumps iteration status to done|abandoned and clears the track\'s ACTIVE pointer. No push — the user runs `git push` manually. Call only after the user explicitly approves the iteration.',
     inputSchema: {

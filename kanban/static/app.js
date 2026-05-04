@@ -11,7 +11,6 @@ function setTab(tab) {
   if (tab === 'tracks') renderTracks();
   else if (tab === 'agents') renderAgents();
   else if (tab === 'runs') renderRuns();
-  else if (tab === 'stats') renderStats();
   else renderBoard();
 }
 
@@ -33,29 +32,15 @@ function updateHeader() {
   const tracksBadge = document.getElementById('tracks-badge');
   const trackCount = (STATE.tracks.tracks || []).length;
   tracksBadge.textContent = trackCount ? `(${trackCount})` : '';
-  const liveInstances = (STATE.instances || []).filter(i => i.status !== 'dead').length;
-  document.getElementById('agents-badge').textContent = liveInstances ? `(${liveInstances})` : '';
+  const agentsBadge = document.getElementById('agents-badge');
+  if (agentsBadge && AGENTS_CACHE) {
+    agentsBadge.textContent = AGENTS_CACHE.length ? `(${AGENTS_CACHE.length})` : '';
+  }
   const iterBadge = document.getElementById('iteration-badge');
   if (iterBadge) {
     const total = (STATE.board.tasks || []).length;
     iterBadge.textContent = total ? `(${total})` : '';
   }
-
-  // Topbar queue badge
-  const qbtn = document.getElementById('queue-btn');
-  const qcount = document.getElementById('queue-count');
-  const items = STATE.queue.items || [];
-  if (qbtn && qcount) {
-    if (items.length) {
-      qcount.textContent = items.length;
-      qcount.hidden = false;
-    } else {
-      qcount.hidden = true;
-    }
-  }
-
-  // Re-render side-sheet if open
-  if (document.getElementById('queue-sheet')?.classList.contains('open')) renderQueueSheet();
 }
 
 function renderSkeleton() {
@@ -86,29 +71,32 @@ function dataSignature() {
   const tracks = (STATE.tracks.tracks || []).map(tr =>
     `${tr.slug}|${tr.active || ''}|${(tr.iterations || []).map(it => `${it.id}:${it.status}:${it.task_count}:${it.done_count || 0}`).join(';')}`
   ).sort().join('\n');
-  const queue = (STATE.queue.items || []).map(q => `${q.task_id}|${q.assignee || ''}`).sort().join('\n');
+  let roadmap = '';
+  if (STATE.viewedTrack && STATE.viewedTrackData) {
+    roadmap = (STATE.viewedTrackData.iterations || []).map(it =>
+      `${it.id}:${it.status}:${(it.tasks || []).map(t => `${t.id}=${t.status}`).join(',')}`
+    ).join('|');
+  }
   const iter = STATE.board.iteration ? `${STATE.board.iteration.id}|${STATE.board.iteration.track || ''}|${(STATE.board.iteration.readme || '').length}` : '';
-  // tokens_used deliberately excluded — it changes every heartbeat and would
-  // trigger full DOM re-renders that flicker the UI. Status / current task
-  // changes still rebuild.
-  const instances = (STATE.instances || []).map(i => `${i.id}|${i.status}|${i.current_task_id || ''}`).sort().join('\n');
-  return `${iter}\n${tasks}\n${tracks}\n${queue}\n${instances}`;
+  return `${iter}\n${tasks}\n${tracks}\n${roadmap}`;
 }
 
 async function refresh(opts = {}) {
   if (FIRST_REFRESH) renderSkeleton();
   try {
     const boardUrl = STATE.boardTrack ? `/api/board?track=${encodeURIComponent(STATE.boardTrack)}` : '/api/board';
-    const [board, tracks, queue, project, instances] = await Promise.all([
-      api(boardUrl), api('/api/tracks'), api('/api/queue'),
+    const [board, tracks, project] = await Promise.all([
+      api(boardUrl), api('/api/tracks'),
       api('/api/project').catch(() => null),
-      api('/api/instances').catch(() => ({ instances: [] })),
     ]);
     STATE.board = board;
     STATE.tracks = tracks;
-    STATE.queue = queue;
     STATE.project = project;
-    STATE.instances = instances.instances || [];
+    if (STATE.viewedTrack) {
+      try {
+        STATE.viewedTrackData = await api(`/api/track/${encodeURIComponent(STATE.viewedTrack)}`);
+      } catch { STATE.viewedTrackData = null; }
+    }
     if (project?.name) {
       const brand = document.querySelector('.brand');
       if (brand) brand.textContent = project.name;
@@ -130,11 +118,8 @@ async function refresh(opts = {}) {
   if (!sameData) {
     if (STATE.currentTab === 'tracks') renderTracks();
     else if (STATE.currentTab === 'agents') renderAgents();
+    else if (STATE.currentTab === 'runs') renderRuns();
     else renderBoard();
-  } else if (STATE.currentTab === 'agents' && typeof patchInstanceTokens === 'function') {
-    // Heartbeats arrive every Stop hook; tokens_used is excluded from the
-    // signature so we patch in place rather than tearing the cards down.
-    patchInstanceTokens();
   }
   checkConflict();
   FIRST_REFRESH = false;
@@ -168,7 +153,14 @@ function initDensity() {
 
 function bindChrome() {
   for (const el of document.querySelectorAll('.tab')) {
-    el.addEventListener('click', () => setTab(el.dataset.tab));
+    el.addEventListener('click', () => {
+      if (el.dataset.tab === 'tracks' && STATE.viewedTrack) {
+        STATE.viewedTrack = null;
+        STATE.viewedTrackData = null;
+        if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+      }
+      setTab(el.dataset.tab);
+    });
   }
   document.getElementById('reload')?.addEventListener('click', refresh);
   document.getElementById('theme-toggle')?.addEventListener('click', () => {
@@ -212,6 +204,7 @@ function selectBoardTrack(slug) {
 function rerenderActiveView() {
   if (STATE.currentTab === 'tracks') renderTracks();
   else if (STATE.currentTab === 'agents') renderAgents();
+  else if (STATE.currentTab === 'runs') renderRuns();
   else renderBoard();
 }
 
@@ -313,61 +306,6 @@ function renderBoardPickerPop() {
   });
 }
 
-// ============ queue side-sheet ============
-function renderQueueSheet() {
-  const body = document.getElementById('queue-sheet-body');
-  const sub = document.getElementById('queue-sheet-sub');
-  const items = STATE.queue.items || [];
-  if (sub) sub.textContent = items.length ? `${items.length} pending` : '';
-  if (!body) return;
-  if (!items.length) {
-    body.innerHTML = `<div class="queue-empty"><div class="glyph">○</div>queue empty</div>`;
-    return;
-  }
-  body.innerHTML = '';
-  for (const it of items) {
-    const t = STATE.taskIndex[it.task_id];
-    const title = t?.title || '(unknown task)';
-    const ts = it.queued_at ? new Date(it.queued_at).toLocaleTimeString() : '';
-    const status = t?.status || 'queued';
-    const row = document.createElement('div');
-    row.className = 'queue-item';
-    row.innerHTML = `
-      <span class="dot s-${status}${status === 'in-progress' ? ' pulse' : ''}"></span>
-      <div style="min-width:0">
-        <div><span class="queue-id">${escapeHtml(it.task_id)}</span> <span class="queue-task">${escapeHtml(title)}</span></div>
-        <div class="queue-meta">
-          ${it.assignee ? `<span>${escapeHtml(it.assignee)}</span><span>·</span>` : ''}
-          <span>${escapeHtml(status)}</span>
-          ${ts ? `<span>·</span><span>${escapeHtml(ts)}</span>` : ''}
-        </div>
-      </div>
-      <button class="queue-cancel" data-id="${escapeHtml(it.task_id)}">Cancel</button>
-    `;
-    row.addEventListener('click', e => {
-      const btn = e.target.closest('.queue-cancel');
-      if (btn) { e.stopPropagation(); stopTask(btn.dataset.id); return; }
-      closeQueueSheet();
-      openModal(it.task_id);
-    });
-    body.appendChild(row);
-  }
-}
-
-function openQueueSheet() {
-  document.getElementById('queue-sheet')?.classList.add('open');
-  renderQueueSheet();
-}
-function closeQueueSheet() {
-  document.getElementById('queue-sheet')?.classList.remove('open');
-}
-function toggleQueueSheet() {
-  const el = document.getElementById('queue-sheet');
-  if (!el) return;
-  if (el.classList.contains('open')) closeQueueSheet();
-  else openQueueSheet();
-}
-
 // ============ keyboard help overlay ============
 const KBD_GROUPS = [
   ['Navigation', [
@@ -376,7 +314,7 @@ const KBD_GROUPS = [
     [['i'], 'Iteration board'],
     [['t'], 'Tracks'],
     [['a'], 'Agents'],
-    [['q'], 'Toggle queue panel'],
+    [['u'], 'Runs'],
     [['Esc'], 'Close any panel/modal/focus'],
   ]],
   ['Cards (iteration tab)', [
@@ -384,11 +322,9 @@ const KBD_GROUPS = [
     [['k'], 'Focus previous card'],
     [['h'], 'Focus first card in left column'],
     [['l'], 'Focus first card in right column'],
-    [['1','-','5'], 'Move focused card to column N'],
+    [['1','-','3'], 'Move focused card to column N'],
     [['Enter'], 'Open card details'],
     [['e'], 'Edit (alias for Enter)'],
-    [['s'], 'Start dispatch (todo + deps ready)'],
-    [['v'], 'Verify (verifying status)'],
     [['n'], 'New task in active iteration'],
   ]],
   ['Theme', [
@@ -517,7 +453,6 @@ function bindShortcuts() {
       if (document.getElementById('newtask-bg')?.classList.contains('open')) { closeNewTaskForm(); return; }
       if (document.getElementById('form-bg')?.classList.contains('open')) { closeFormModal(); return; }
       if (document.getElementById('modal-bg')?.classList.contains('open')) { closeModal(); return; }
-      if (document.getElementById('queue-sheet')?.classList.contains('open')) { closeQueueSheet(); return; }
       const fc = focusedCard();
       if (fc) { fc.classList.remove('focused'); return; }
       return;
@@ -555,10 +490,16 @@ function bindShortcuts() {
       case '/':
         e.preventDefault(); document.getElementById('search-input')?.focus(); break;
       case 'i': setTab('iteration'); break;
-      case 't': setTab('tracks'); break;
+      case 't':
+        if (STATE.viewedTrack) {
+          STATE.viewedTrack = null;
+          STATE.viewedTrackData = null;
+          if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+        }
+        setTab('tracks');
+        break;
       case 'a': setTab('agents'); break;
-      case 's': setTab('stats'); break;
-      case 'q': e.preventDefault(); toggleQueueSheet(); break;
+      case 'u': setTab('runs'); break;
       case 'n': e.preventDefault(); openNewTaskForm(); break;
       case 'r': refresh(); break;
       case 'T':
@@ -680,8 +621,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('icon-search').innerHTML = Icons.search(13, 1.4);
   document.getElementById('icon-reload').innerHTML = Icons.reload(13, 1.5);
   document.getElementById('icon-chev').innerHTML  = Icons.chevron(11, 1.5);
-  const qIcon = document.getElementById('icon-queue');
-  if (qIcon) qIcon.innerHTML = Icons.queue(13, 1.5);
 
   bindChrome();
   bindModal();
@@ -691,13 +630,14 @@ document.addEventListener('DOMContentLoaded', () => {
   bindConfirm();
   bindShortcuts();
 
-  document.getElementById('queue-btn')?.addEventListener('click', toggleQueueSheet);
-  document.getElementById('queue-sheet-close')?.addEventListener('click', closeQueueSheet);
   document.getElementById('kbd-help')?.addEventListener('click', openKbdOverlay);
   document.getElementById('kbd-close')?.addEventListener('click', closeKbdOverlay);
   document.getElementById('kbd-bg')?.addEventListener('click', e => {
     if (e.target.id === 'kbd-bg') closeKbdOverlay();
   });
+
+  applyHashRoute();
+  window.addEventListener('hashchange', applyHashRoute);
 
   refresh();
   bindEventStream();
@@ -707,6 +647,24 @@ document.addEventListener('DOMContentLoaded', () => {
   pollHealth();
   setInterval(pollHealth, 10000);
 });
+
+function applyHashRoute() {
+  const m = /^#track\/([^/?#]+)/.exec(location.hash || '');
+  if (m) {
+    const slug = decodeURIComponent(m[1]);
+    if (STATE.viewedTrack !== slug) {
+      STATE.viewedTrack = slug;
+      STATE.viewedTrackData = null;
+    }
+    if (STATE.currentTab !== 'tracks') setTab('tracks');
+    else renderTracks();
+    if (typeof loadTrackRoadmap === 'function') loadTrackRoadmap();
+  } else if (STATE.viewedTrack) {
+    STATE.viewedTrack = null;
+    STATE.viewedTrackData = null;
+    if (STATE.currentTab === 'tracks') renderTracks();
+  }
+}
 
 async function pollHealth() {
   const dot = document.getElementById('health-dot');
@@ -745,8 +703,5 @@ function bindEventStream() {
 
 window.refresh = refresh;
 window.setTab = setTab;
-window.openQueueSheet = openQueueSheet;
-window.closeQueueSheet = closeQueueSheet;
-window.toggleQueueSheet = toggleQueueSheet;
 window.openKbdOverlay = openKbdOverlay;
 window.closeKbdOverlay = closeKbdOverlay;
